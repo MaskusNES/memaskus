@@ -1,0 +1,30 @@
+import { z } from "zod";
+
+export const scopeSchema = z
+  .discriminatedUnion("kind", [
+    z.object({ kind: z.literal("global") }).strict(),
+    z.object({ kind: z.literal("user"), user_id: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal("project"), project_id: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal("workspace"), workspace_id: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal("agent"), agent_id: z.string().min(1) }).strict(),
+    z
+      .object({
+        kind: z.literal("conversation"),
+        user_id: z.string().min(1).optional(),
+        project_id: z.string().min(1).optional(),
+        workspace_id: z.string().min(1).optional(),
+        agent_id: z.string().min(1).optional()
+      })
+      .strict()
+  ])
+  .optional();
+
+export const sourceSchema = z
+  .object({
+    kind: z.string().min(1),
+    external_id: z.string().nullable().optional(),
+    title: z.string().nullable().optional(),
+    content_excerpt: z.string().nullable().optional(),
+    metadata: z.record(z.unknown()).optional()
+  })
+  .optional();
