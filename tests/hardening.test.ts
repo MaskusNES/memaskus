@@ -223,7 +223,7 @@ describe("scope, privacy, and review hardening", () => {
 
     const ready = await app.inject({ method: "GET", url: "/ready" });
     expect(ready.statusCode).toBe(200);
-    expect(ready.json()).toEqual({ ok: true, schema_version: 3 });
+    expect(ready.json()).toEqual({ ok: true, schema_version: 4 });
   });
 
   it("rejects candidate merges across type, exact scope, or knowledge layer", async () => {
@@ -339,7 +339,7 @@ describe("database migrations", () => {
     legacy.close();
 
     const migrated = openDatabase(databasePath);
-    expect(migrated.pragma("user_version", { simple: true })).toBe(3);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(4);
     expect((migrated.prepare("SELECT content FROM nodes WHERE id = 'node_legacy'").get() as { content: string }).content).toBe(
       "Legacy content"
     );
@@ -347,6 +347,10 @@ describe("database migrations", () => {
     expect(candidateColumns.map((column) => column.name)).toEqual(
       expect.arrayContaining(["scope_conversation_id", "knowledge_scope", "privacy_level", "speaker_role", "turn_id"])
     );
+    expect(
+      (migrated.prepare("SELECT COUNT(*) AS count FROM nodes_fts WHERE id = 'node_legacy'").get() as { count: number })
+        .count
+    ).toBe(1);
     migrated.close();
     fs.rmSync(directory, { recursive: true, force: true });
   });
@@ -358,7 +362,7 @@ describe("database migrations", () => {
     future.pragma("user_version = 999");
     future.close();
 
-    expect(() => openDatabase(databasePath)).toThrow(/newer than supported version 3/);
+    expect(() => openDatabase(databasePath)).toThrow(/newer than supported version 4/);
     fs.rmSync(directory, { recursive: true, force: true });
   });
 });

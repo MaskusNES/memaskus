@@ -1,4 +1,4 @@
-import type { Scope } from "./types.js";
+import type { KnowledgeScope, Scope } from "./types.js";
 
 const identityFields = ["user_id", "project_id", "workspace_id", "agent_id", "conversation_id"] as const;
 
@@ -26,21 +26,22 @@ export function scopeVisibleFrom(memoryScope: Scope, requestedScope?: Scope): bo
   return exactScopeMatch(memoryScope, requested);
 }
 
-export function scopeSqlParts(scope?: Scope): { clause: string; params: unknown[] } {
+export function scopeSqlParts(scope?: Scope, prefix = ""): { clause: string; params: unknown[] } {
   const requested = scope ?? { kind: "global" as const };
+  const column = (name: string) => `${prefix}${name}`;
   if (requested.kind === "global") {
-    return { clause: "scope_kind = 'global'", params: [] };
+    return { clause: `${column("scope_kind")} = 'global'`, params: [] };
   }
 
   const columnByField = {
-    user_id: "scope_user_id",
-    project_id: "scope_project_id",
-    workspace_id: "scope_workspace_id",
-    agent_id: "scope_agent_id",
-    conversation_id: "scope_conversation_id"
+    user_id: column("scope_user_id"),
+    project_id: column("scope_project_id"),
+    workspace_id: column("scope_workspace_id"),
+    agent_id: column("scope_agent_id"),
+    conversation_id: column("scope_conversation_id")
   } as const;
-  const clauses = ["scope_kind = 'global'"];
-  const exact: string[] = ["scope_kind = ?"];
+  const clauses = [`${column("scope_kind")} = 'global'`];
+  const exact: string[] = [`${column("scope_kind")} = ?`];
   const params: unknown[] = [requested.kind];
   for (const field of identityFields) {
     if (requested[field]) {
@@ -50,4 +51,23 @@ export function scopeSqlParts(scope?: Scope): { clause: string; params: unknown[
   }
   clauses.push(`(${exact.join(" AND ")})`);
   return { clause: `(${clauses.join(" OR ")})`, params };
+}
+
+export function memoryVisibilitySqlParts(
+  scope?: Scope,
+  knowledgeScope?: KnowledgeScope,
+  prefix = ""
+): { clause: string; params: unknown[] } {
+  const scopeFilter = scopeSqlParts(scope, prefix);
+  const knowledgeColumn = `${prefix}knowledge_scope`;
+  if (knowledgeScope === "global") {
+    return { clause: `${knowledgeColumn} = 'global'`, params: [] };
+  }
+  if (knowledgeScope === "project_local") {
+    return {
+      clause: `${knowledgeColumn} = 'project_local' AND ${scopeFilter.clause}`,
+      params: scopeFilter.params
+    };
+  }
+  return scopeFilter;
 }

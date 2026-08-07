@@ -1,14 +1,16 @@
 import type { MemoryDb } from "../db/connection.js";
-import { knowledgeScope, type KnowledgeScope } from "./links.js";
+import { knowledgeScope } from "./links.js";
 import { mapEdge, mapNode } from "./mappers.js";
 import { redactedContent, redactSourcesForMemory } from "./privacy.js";
-import { scopeSqlParts, scopeVisibleFrom } from "./scope.js";
+import { memoryVisibilitySqlParts, scopeVisibleFrom } from "./scope.js";
+import { indexedNodeSearch, tokenOverlap } from "./search.js";
 import { listSourcesForNode } from "./sources.js";
-import type { Edge, MemoryNode, Scope, Source } from "./types.js";
+import type { Edge, KnowledgeScope, MemoryNode, Scope, Source } from "./types.js";
 
 const GRAPH_MAX_DEPTH = 2;
 const GRAPH_HOP_DECAY = 0.7;
-const TRAVERSABLE_RELATIONS = new Set(["RELATED_TO", "SUPPORTS", "DEPENDS_ON", "ABOUT"]);
+const MAX_INDEXED_SEEDS = 250;
+const TRAVERSABLE_RELATIONS = ["RELATED_TO", "SUPPORTS", "DEPENDS_ON", "ABOUT"] as const;
 
 export type RecallInput = {
   query: string;
@@ -25,34 +27,15 @@ export type RecallResult = {
   content: string;
   confidence: number;
   score: number;
+  retrieval: {
+    strategy: "fts5_graph" | "token_graph";
+    lexical_score: number;
+    graph_score: number;
+    graph_distance: number | null;
+    feedback_score: number;
+  };
   sources?: Source[];
 };
-
-function tokenize(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .split(/[^\p{L}\p{N}:_-]+/u)
-      .map((token) => token.trim())
-      .filter((token) => token.length > 2)
-  );
-}
-
-function tokenOverlap(query: string, content: string): number {
-  const queryTokens = tokenize(query);
-  if (queryTokens.size === 0) {
-    return 0;
-  }
-
-  const contentTokens = tokenize(content);
-  let matches = 0;
-  for (const token of queryTokens) {
-    if (contentTokens.has(token)) {
-      matches += 1;
-    }
-  }
-  return matches / queryTokens.size;
-}
 
 function recencyBoost(memory: MemoryNode): number {
   const ageMs = Date.now() - new Date(memory.updated_at).getTime();
@@ -63,11 +46,6 @@ function recencyBoost(memory: MemoryNode): number {
 type GraphSignal = {
   distance: number;
   strength: number;
-};
-
-type GraphNeighbor = {
-  id: string;
-  confidence: number;
 };
 
 function feedbackSignals(db: MemoryDb): Map<string, number> {
@@ -89,141 +67,199 @@ function feedbackSignals(db: MemoryDb): Map<string, number> {
   return new Map(rows.map((row) => [row.memory_id, Math.max(-1, Math.min(1, row.signal / 2))]));
 }
 
-function graphAdjacency(db: MemoryDb, memories: MemoryNode[]): Map<string, GraphNeighbor[]> {
-  const memoriesById = new Map(memories.map((memory) => [memory.id, memory]));
-  const adjacency = new Map<string, GraphNeighbor[]>();
-  const edges = db
-    .prepare("SELECT * FROM edges WHERE status = 'active'")
-    .all()
-    .map((row) => mapEdge(row as never));
-
-  const connect = (fromId: string, toId: string, edge: Edge) => {
-    const neighbors = adjacency.get(fromId) ?? [];
-    neighbors.push({
-      id: toId,
-      confidence: Math.max(0, Math.min(1, edge.confidence))
-    });
-    adjacency.set(fromId, neighbors);
-  };
-
-  for (const edge of edges) {
-    if (!TRAVERSABLE_RELATIONS.has(edge.relation.toUpperCase())) {
-      continue;
-    }
-    const from = memoriesById.get(edge.from_id);
-    const to = memoriesById.get(edge.to_id);
-    if (!from || !to || knowledgeScope(from) !== knowledgeScope(to)) {
-      continue;
-    }
-
-    // Retrieval treats relations as semantic connectivity. Direction remains
-    // available through memory_explain, but either endpoint can lead to the other.
-    connect(edge.from_id, edge.to_id, edge);
-    connect(edge.to_id, edge.from_id, edge);
-  }
-
-  return adjacency;
+function isVisible(memory: MemoryNode, input: RecallInput): boolean {
+  return (
+    (!input.knowledge_scope || knowledgeScope(memory) === input.knowledge_scope) &&
+    (input.knowledge_scope === "global" || scopeVisibleFrom(memory.scope, input.scope))
+  );
 }
 
-function graphSignals(
-  db: MemoryDb,
-  memories: MemoryNode[],
-  overlaps: Map<string, number>
-): Map<string, GraphSignal> {
-  const adjacency = graphAdjacency(db, memories);
-  const signals = new Map<string, GraphSignal>();
+function loadVisibleMemories(db: MemoryDb, input: RecallInput): MemoryNode[] {
+  const visibility = memoryVisibilitySqlParts(input.scope, input.knowledge_scope);
+  return db
+    .prepare(`SELECT * FROM nodes WHERE status = 'active' AND ${visibility.clause}`)
+    .all(...visibility.params)
+    .map((row) => mapNode(row as never))
+    .filter((memory) => isVisible(memory, input));
+}
 
-  for (const [seedId, overlap] of overlaps) {
-    if (overlap <= 0) {
-      continue;
+function loadVisibleMemoriesById(db: MemoryDb, ids: Iterable<string>, input: RecallInput): MemoryNode[] {
+  const uniqueIds = [...new Set(ids)];
+  if (uniqueIds.length === 0) {
+    return [];
+  }
+  const visibility = memoryVisibilitySqlParts(input.scope, input.knowledge_scope);
+  const placeholders = uniqueIds.map(() => "?").join(", ");
+  return db
+    .prepare(
+      `SELECT * FROM nodes
+       WHERE status = 'active'
+         AND ${visibility.clause}
+         AND id IN (${placeholders})`
+    )
+    .all(...visibility.params, ...uniqueIds)
+    .map((row) => mapNode(row as never))
+    .filter((memory) => isVisible(memory, input));
+}
+
+function frontierEdges(db: MemoryDb, ids: string[]): Edge[] {
+  if (ids.length === 0) {
+    return [];
+  }
+  const relationPlaceholders = TRAVERSABLE_RELATIONS.map(() => "?").join(", ");
+  const idPlaceholders = ids.map(() => "?").join(", ");
+  return db
+    .prepare(
+      `SELECT * FROM edges
+       WHERE status = 'active'
+         AND UPPER(relation) IN (${relationPlaceholders})
+         AND (from_id IN (${idPlaceholders}) OR to_id IN (${idPlaceholders}))`
+    )
+    .all(...TRAVERSABLE_RELATIONS, ...ids, ...ids)
+    .map((row) => mapEdge(row as never));
+}
+
+function expandGraph(
+  db: MemoryDb,
+  input: RecallInput,
+  seeds: MemoryNode[],
+  seedStrengths: Map<string, number>
+): { memories: Map<string, MemoryNode>; signals: Map<string, GraphSignal> } {
+  const memories = new Map(seeds.map((memory) => [memory.id, memory]));
+  const bestStrength = new Map(seedStrengths);
+  const signals = new Map<string, GraphSignal>();
+  let frontier = new Map(seedStrengths);
+
+  for (let distance = 1; distance <= GRAPH_MAX_DEPTH && frontier.size > 0; distance += 1) {
+    const edges = frontierEdges(db, [...frontier.keys()]);
+    const neighborIds = new Set<string>();
+    for (const edge of edges) {
+      neighborIds.add(edge.from_id);
+      neighborIds.add(edge.to_id);
+    }
+    for (const memory of loadVisibleMemoriesById(db, neighborIds, input)) {
+      memories.set(memory.id, memory);
     }
 
-    const bestForSeed = new Map<string, number>([[seedId, overlap]]);
-    let frontier = new Map<string, number>([[seedId, overlap]]);
-
-    for (let distance = 1; distance <= GRAPH_MAX_DEPTH && frontier.size > 0; distance += 1) {
-      const nextFrontier = new Map<string, number>();
-
-      for (const [nodeId, strength] of frontier) {
-        for (const neighbor of adjacency.get(nodeId) ?? []) {
-          if (neighbor.id === seedId) {
-            continue;
-          }
-
-          const nextStrength = strength * neighbor.confidence * GRAPH_HOP_DECAY;
-          if (nextStrength <= (bestForSeed.get(neighbor.id) ?? 0)) {
-            continue;
-          }
-
-          bestForSeed.set(neighbor.id, nextStrength);
-          nextFrontier.set(neighbor.id, Math.max(nextFrontier.get(neighbor.id) ?? 0, nextStrength));
-
-          const current = signals.get(neighbor.id);
-          if (!current || nextStrength > current.strength) {
-            signals.set(neighbor.id, { distance, strength: nextStrength });
-          }
-        }
+    const nextFrontier = new Map<string, number>();
+    const consider = (fromId: string, toId: string, edge: Edge) => {
+      const strength = frontier.get(fromId);
+      const from = memories.get(fromId);
+      const to = memories.get(toId);
+      if (strength === undefined || !from || !to || knowledgeScope(from) !== knowledgeScope(to)) {
+        return;
       }
 
-      frontier = nextFrontier;
+      const nextStrength = strength * Math.max(0, Math.min(1, edge.confidence)) * GRAPH_HOP_DECAY;
+      if (nextStrength <= (bestStrength.get(toId) ?? 0)) {
+        return;
+      }
+      bestStrength.set(toId, nextStrength);
+      nextFrontier.set(toId, Math.max(nextFrontier.get(toId) ?? 0, nextStrength));
+      const current = signals.get(toId);
+      if (!current || nextStrength > current.strength) {
+        signals.set(toId, { distance, strength: nextStrength });
+      }
+    };
+
+    for (const edge of edges) {
+      consider(edge.from_id, edge.to_id, edge);
+      consider(edge.to_id, edge.from_id, edge);
     }
+    frontier = nextFrontier;
   }
 
-  return signals;
+  return { memories, signals };
+}
+
+function lexicalSeeds(
+  db: MemoryDb,
+  input: RecallInput
+): {
+  strategy: RecallResult["retrieval"]["strategy"];
+  memories: MemoryNode[];
+  strengths: Map<string, number>;
+} {
+  const requestedLimit = Math.min(100, Math.max(1, input.limit ?? 10));
+  const indexed = indexedNodeSearch(db, {
+    query: input.query,
+    scope: input.scope,
+    knowledge_scope: input.knowledge_scope,
+    limit: Math.min(MAX_INDEXED_SEEDS, Math.max(50, requestedLimit * 10))
+  });
+
+  if (indexed.available) {
+    const indexedScores = new Map(indexed.hits.map((hit) => [hit.id, hit.score]));
+    const memories = loadVisibleMemoriesById(db, indexedScores.keys(), input);
+    const strengths = new Map(
+      memories.map((memory) => {
+        const overlap = tokenOverlap(input.query, `${memory.type} ${memory.content}`);
+        const indexedScore = indexedScores.get(memory.id) ?? 0;
+        return [memory.id, Math.min(1, indexedScore * 0.75 + overlap * 0.25)] as const;
+      })
+    );
+    return { strategy: "fts5_graph", memories, strengths };
+  }
+
+  const visible = loadVisibleMemories(db, input);
+  const strengths = new Map<string, number>();
+  for (const memory of visible) {
+    const overlap = tokenOverlap(input.query, `${memory.type} ${memory.content}`);
+    if (overlap > 0) {
+      strengths.set(memory.id, overlap);
+    }
+  }
+  return {
+    strategy: "token_graph",
+    memories: visible.filter((memory) => strengths.has(memory.id)),
+    strengths
+  };
 }
 
 export function recall(db: MemoryDb, input: RecallInput): RecallResult[] {
-  const scopeFilter = scopeSqlParts(input.scope);
-  const visibilityClause =
-    input.knowledge_scope === "global"
-      ? "knowledge_scope = 'global'"
-      : input.knowledge_scope === "project_local"
-        ? `knowledge_scope = 'project_local' AND ${scopeFilter.clause}`
-        : scopeFilter.clause;
-  const visibilityParams = input.knowledge_scope === "global" ? [] : scopeFilter.params;
-  const rows = db
-    .prepare(`SELECT * FROM nodes WHERE status = 'active' AND ${visibilityClause}`)
-    .all(...visibilityParams);
-  const memories = rows
-    .map((row) => mapNode(row as never))
-    .filter((memory) => !input.knowledge_scope || knowledgeScope(memory) === input.knowledge_scope)
-    .filter(
-      (memory) => input.knowledge_scope === "global" || scopeVisibleFrom(memory.scope, input.scope)
-    );
+  const seeds = lexicalSeeds(db, input);
+  if (seeds.strengths.size === 0) {
+    return [];
+  }
 
+  const expanded = expandGraph(db, input, seeds.memories, seeds.strengths);
   const requestedTypes = new Set(input.types ?? []);
-  const overlaps = new Map(memories.map((memory) => [memory.id, tokenOverlap(input.query, memory.content)]));
-  const graphMatches = graphSignals(db, memories, overlaps);
   const feedback = feedbackSignals(db);
 
-  return memories
+  return [...expanded.memories.values()]
     .filter((memory) => requestedTypes.size === 0 || requestedTypes.has(memory.type))
     .map((memory) => {
-      const overlap = overlaps.get(memory.id) ?? 0;
-      const graphMatch = graphMatches.get(memory.id);
+      const lexical = seeds.strengths.get(memory.id) ?? 0;
+      const graphMatch = expanded.signals.get(memory.id);
+      const feedbackScore = feedback.get(memory.id) ?? 0;
       const score = Math.min(
         1,
-        overlap * 0.57 +
+        lexical * 0.57 +
           memory.confidence * 0.14 +
           recencyBoost(memory) * 0.04 +
           (graphMatch?.strength ?? 0) * 0.2 +
-          (feedback.get(memory.id) ?? 0) * 0.05
+          feedbackScore * 0.05
       );
       return {
-        overlap,
-        graphMatch,
         id: memory.id,
         type: memory.type,
         content: redactedContent(memory),
         confidence: memory.confidence,
         score: Number(score.toFixed(4)),
+        retrieval: {
+          strategy: seeds.strategy,
+          lexical_score: Number(lexical.toFixed(4)),
+          graph_score: Number((graphMatch?.strength ?? 0).toFixed(4)),
+          graph_distance: graphMatch?.distance ?? null,
+          feedback_score: Number(feedbackScore.toFixed(4))
+        },
         memory
       };
     })
-    .filter((result) => result.overlap > 0 || result.graphMatch)
+    .filter((result) => result.retrieval.lexical_score > 0 || result.retrieval.graph_score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, input.limit ?? 10)
-    .map(({ overlap: _overlap, graphMatch: _graphMatch, memory, ...result }) => ({
+    .map(({ memory, ...result }) => ({
       ...result,
       sources: input.include_sources
         ? redactSourcesForMemory(memory, listSourcesForNode(db, memory.id))

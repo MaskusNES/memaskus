@@ -2,7 +2,7 @@ import fs from "node:fs";
 import type { MemoryDb } from "./connection.js";
 import { nowIso } from "../shared/time.js";
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 function tableColumns(db: MemoryDb, table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -28,6 +28,49 @@ function recordMigration(db: MemoryDb, version: number, name: string): void {
      VALUES (?, ?, ?)`
   ).run(version, name, nowIso());
   db.pragma(`user_version = ${version}`);
+}
+
+function isFtsUnavailable(error: unknown): boolean {
+  return error instanceof Error && /no such module:\s*fts5/iu.test(error.message);
+}
+
+function ensureNodeSearchIndex(db: MemoryDb): boolean {
+  const existed = tableExists(db, "nodes_fts");
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+        id UNINDEXED,
+        content,
+        type,
+        tokenize = 'unicode61 remove_diacritics 2'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS nodes_fts_after_insert
+      AFTER INSERT ON nodes BEGIN
+        INSERT INTO nodes_fts (id, content, type) VALUES (new.id, new.content, new.type);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS nodes_fts_after_update
+      AFTER UPDATE OF id, content, type ON nodes BEGIN
+        DELETE FROM nodes_fts WHERE id = old.id;
+        INSERT INTO nodes_fts (id, content, type) VALUES (new.id, new.content, new.type);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS nodes_fts_after_delete
+      AFTER DELETE ON nodes BEGIN
+        DELETE FROM nodes_fts WHERE id = old.id;
+      END;
+    `);
+    if (!existed) {
+      db.exec("INSERT INTO nodes_fts (id, content, type) SELECT id, content, type FROM nodes");
+    }
+    return true;
+  } catch (error) {
+    if (isFtsUnavailable(error)) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 export function runMigrations(db: MemoryDb, schemaUrl: URL): void {
@@ -89,7 +132,14 @@ export function runMigrations(db: MemoryDb, schemaUrl: URL): void {
       db.exec(schema);
       recordMigration(db, 3, "canonical knowledge scope");
     }
+
+    if (current < 4) {
+      ensureNodeSearchIndex(db);
+      recordMigration(db, 4, "optional FTS5 node search index");
+    }
   });
 
   migrate();
+  // Repair an index that was removed or became available after the v4 migration.
+  ensureNodeSearchIndex(db);
 }
