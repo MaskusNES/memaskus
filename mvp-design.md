@@ -423,25 +423,34 @@ POST /v1/candidates/:id/reject
 
 Approval creates or updates an active memory node.
 
-## 7. Recall Algorithm v0
+## 7. Recall Algorithm v1
 
-The first recall implementation can be intentionally simple:
+Recall combines direct lexical matches with bounded graph expansion:
 
 1. Filter active nodes by scope.
-2. Filter by requested types.
-3. Compute lexical score using case-insensitive token overlap between query and
+2. Compute lexical score using case-insensitive token overlap between query and
    node content.
-4. Add confidence as a ranking signal.
-5. Add small recency boost.
-6. Return top `limit` results with sources.
+3. Use matching nodes as seeds and traverse active edges in either direction for
+   up to two hops. Keep traversal inside the visible scope and knowledge layer.
+4. Attenuate graph relevance by edge confidence and `0.7` for every hop.
+5. Filter returned nodes by requested types. Nodes of other types may still act
+   as traversal seeds or intermediate nodes.
+6. Add confidence and a small recency boost.
+7. Return direct and graph-connected matches, ranked together, up to `limit`.
 
 Score formula:
 
 ```text
-score = token_overlap * 0.65 + confidence * 0.25 + recency_boost * 0.10
+score = min(
+  1,
+  token_overlap * 0.65
+    + graph_strength * 0.25
+    + confidence * 0.25
+    + recency_boost * 0.10
+)
 ```
 
-This can later be replaced with embeddings and graph-neighborhood scoring.
+This can later be combined with embeddings and relation-specific edge weights.
 
 ## 8. Candidate Extraction v0
 

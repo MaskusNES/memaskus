@@ -24,7 +24,7 @@ describe("HTTP API security controls", () => {
     }
   });
 
-  it("requires the configured API key for write requests", async () => {
+  it("requires the configured API key for read and write requests", async () => {
     const unauthorized = await app.inject({
       method: "POST",
       url: "/v1/memories",
@@ -49,5 +49,14 @@ describe("HTTP API security controls", () => {
       }
     });
     expect(authorized.statusCode).toBe(201);
+
+    const unauthorizedRead = await app.inject({ method: "GET", url: "/v1/memories" });
+    expect(unauthorizedRead.statusCode).toBe(401);
+    const authorizedRead = await app.inject({
+      method: "GET",
+      url: "/v1/memories",
+      headers: { "x-memory-api-key": "test-key" }
+    });
+    expect(authorizedRead.statusCode).toBe(200);
   });
 });

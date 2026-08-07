@@ -479,6 +479,7 @@ describe("disagreement-driven preference review", () => {
         confidence: 0.82,
         risk: "low",
         needs_confirmation: false,
+        privacy_level: "normal",
         status: "pending",
         source_id: "src:test",
         metadata: {},

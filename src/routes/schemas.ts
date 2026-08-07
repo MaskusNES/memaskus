@@ -10,6 +10,7 @@ export const scopeSchema = z
     z
       .object({
         kind: z.literal("conversation"),
+        conversation_id: z.string().min(1),
         user_id: z.string().min(1).optional(),
         project_id: z.string().min(1).optional(),
         workspace_id: z.string().min(1).optional(),

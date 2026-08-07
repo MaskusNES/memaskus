@@ -4,6 +4,8 @@ import { newId } from "../shared/ids.js";
 import { nowIso } from "../shared/time.js";
 import { mapEdge, mapNode } from "./mappers.js";
 import { getMemory } from "./nodes.js";
+import { sanitizeMetadata } from "./privacy.js";
+import { exactScopeMatch } from "./scope.js";
 import type { Edge, MemoryNode, Scope } from "./types.js";
 
 export type CreateLinkInput = {
@@ -33,10 +35,24 @@ export function createLink(db: MemoryDb, input: CreateLinkInput): Edge {
   const from = getMemory(db, input.from_id);
   const to = getMemory(db, input.to_id);
 
+  if (from.id === to.id) {
+    throw new ValidationError("A memory cannot link to itself");
+  }
+  const supersessionTarget = input.relation.toUpperCase() === "SUPERSEDES" && to.status === "superseded";
+  if (from.status !== "active" || (to.status !== "active" && !supersessionTarget)) {
+    throw new ValidationError("Links can only be created between active memories");
+  }
+  if (!exactScopeMatch(from.scope, to.scope) || !exactScopeMatch(to.scope, from.scope)) {
+    throw new ValidationError(`Cannot link memories from different physical scopes`);
+  }
+
   if (knowledgeScope(from) !== knowledgeScope(to)) {
     throw new ValidationError(
       `Cannot link ${knowledgeScope(from)} memory ${from.id} to ${knowledgeScope(to)} memory ${to.id}`
     );
+  }
+  if (linkExists(db, from.id, to.id, input.relation)) {
+    throw new ValidationError(`An active ${input.relation} link already exists between these memories`);
   }
 
   const now = nowIso();
@@ -47,7 +63,7 @@ export function createLink(db: MemoryDb, input: CreateLinkInput): Edge {
     relation: input.relation,
     confidence: input.confidence ?? 0.8,
     status: "active",
-    metadata: input.metadata ?? {},
+    metadata: sanitizeMetadata(input.metadata),
     created_at: now,
     updated_at: now
   };
@@ -117,16 +133,7 @@ function overlapScore(left: string, right: string): number {
 }
 
 function scopeMatches(left: Scope, right: Scope): boolean {
-  if (left.kind === "global" || right.kind === "global") {
-    return true;
-  }
-
-  return (
-    left.project_id === right.project_id &&
-    left.user_id === right.user_id &&
-    left.workspace_id === right.workspace_id &&
-    left.agent_id === right.agent_id
-  );
+  return exactScopeMatch(left, right) && exactScopeMatch(right, left);
 }
 
 function linkExists(db: MemoryDb, fromId: string, toId: string, relation: string): boolean {

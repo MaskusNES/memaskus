@@ -4,9 +4,13 @@ import { newId } from "../shared/ids.js";
 import { nowIso } from "../shared/time.js";
 import { createLink, knowledgeScope, metadataKnowledgeScope } from "./links.js";
 import { mapNode } from "./mappers.js";
+import { upsertProfileSlot } from "./profile.js";
+import { assertSafeForStorage } from "./privacy.js";
+import { scopeVisibleFrom } from "./scope.js";
 import { reviewPreferenceSignalsFromConversation } from "./preference-review.js";
 import {
   approveCandidate,
+  approveCandidateAfterConflictResolution,
   createConversationSource,
   getCandidate,
   ingestConversation,
@@ -15,10 +19,24 @@ import {
   type IngestConversationInput
 } from "./candidates.js";
 import type { MemoryNode, Scope } from "./types.js";
+import type { KnowledgeScope, PrivacyLevel, ProfileSlot } from "./types.js";
 
 export type ReviewConversationInput = IngestConversationInput & {
   analysis_mode?: "heuristic" | "agent_supplied";
   agent_analysis?: {
+    profile_updates?: Array<{
+      user_id?: string;
+      topic: string;
+      sub_topic?: string;
+      content: string;
+      confidence?: number;
+      knowledge_scope?: KnowledgeScope;
+      project_id?: string;
+      privacy_level?: PrivacyLevel;
+      metadata?: Record<string, unknown>;
+      evidence_text?: string;
+      reason?: string;
+    }>;
     disagreements?: Array<{
       user_text: string;
       assistant_context?: string;
@@ -128,16 +146,7 @@ function overlapScore(left: string, right: string): number {
 }
 
 function scopeMatches(memory: MemoryNode, scope: Scope): boolean {
-  if (memory.scope.kind === "global" || scope.kind === "global") {
-    return true;
-  }
-
-  return (
-    (!scope.project_id || memory.scope.project_id === scope.project_id) &&
-    (!scope.user_id || memory.scope.user_id === scope.user_id) &&
-    (!scope.workspace_id || memory.scope.workspace_id === scope.workspace_id) &&
-    (!scope.agent_id || memory.scope.agent_id === scope.agent_id)
-  );
+  return scopeVisibleFrom(memory.scope, scope);
 }
 
 function groupTerms(text: string, group: string[]): Set<string> {
@@ -194,11 +203,13 @@ export function contradictionReason(candidate: Candidate, memory: MemoryNode): s
 }
 
 export function findRelevantMemories(db: MemoryDb, candidate: Candidate): MemoryNode[] {
-  const rows = db.prepare("SELECT * FROM nodes WHERE status = 'active' ORDER BY updated_at DESC LIMIT 200").all();
   const candidateKnowledgeScope = metadataKnowledgeScope(candidate.metadata, candidate.scope);
+  const rows = db
+    .prepare("SELECT * FROM nodes WHERE status = 'active' AND knowledge_scope = ?")
+    .all(candidateKnowledgeScope);
   return rows
     .map((row) => mapNode(row as never))
-    .filter((memory) => scopeMatches(memory, candidate.scope))
+    .filter((memory) => candidateKnowledgeScope === "global" || scopeMatches(memory, candidate.scope))
     .filter((memory) => knowledgeScope(memory) === candidateKnowledgeScope)
     .map((memory) => ({
       memory,
@@ -243,7 +254,7 @@ export function insertConflict(db: MemoryDb, candidate: Candidate, memory: Memor
   return mapConflict(row, candidate, memory);
 }
 
-export function reviewConversation(db: MemoryDb, input: ReviewConversationInput) {
+function reviewConversationInternal(db: MemoryDb, input: ReviewConversationInput) {
   const ingested =
     input.analysis_mode === "agent_supplied"
       ? { ...createConversationSource(db, input), candidates: [] }
@@ -257,9 +268,22 @@ export function reviewConversation(db: MemoryDb, input: ReviewConversationInput)
   });
   const approved: MemoryNode[] = [];
   const blocked: Candidate[] = [];
+  const pendingConfirmation: Candidate[] = [];
   const conflicts: MemoryConflict[] = [];
+  const profileUpdates: ProfileSlot[] = [];
 
   const transaction = db.transaction(() => {
+    for (const update of input.agent_analysis?.profile_updates ?? []) {
+      profileUpdates.push(
+        upsertProfileSlot(db, {
+          ...update,
+          source_id: ingested.source_id,
+          evidence_text: update.evidence_text ?? update.content,
+          reason: update.reason ?? "agent-supplied profile update from conversation review"
+        })
+      );
+    }
+
     for (const candidate of ingested.candidates) {
       const relevant = findRelevantMemories(db, candidate);
       const candidateConflicts = relevant.flatMap((memory) => {
@@ -271,8 +295,11 @@ export function reviewConversation(db: MemoryDb, input: ReviewConversationInput)
         const blockedCandidate = updateCandidateStatus(db, candidate.id, "blocked");
         blocked.push(blockedCandidate);
         conflicts.push(...candidateConflicts.map((conflict) => ({ ...conflict, candidate: blockedCandidate })));
+      } else if (candidate.needs_confirmation || candidate.risk !== "low") {
+        pendingConfirmation.push(candidate);
       } else {
-        approved.push(approveCandidate(db, candidate.id));
+        const memory = approveCandidate(db, candidate.id);
+        approved.push(memory);
       }
     }
   });
@@ -282,14 +309,17 @@ export function reviewConversation(db: MemoryDb, input: ReviewConversationInput)
   return {
     source_id: ingested.source_id,
     preference_review: preferenceReview,
+    profile_updates: profileUpdates,
     approved,
     blocked,
+    pending_confirmation: pendingConfirmation,
     conflict_candidates: preferenceReview.conflict_candidates,
     conflicts: [...preferenceReview.conflicts, ...conflicts],
     summary: {
       extracted_candidates: ingested.candidates.length,
       approved: approved.length,
       blocked: blocked.length,
+      pending_confirmation: pendingConfirmation.length,
       conflicts: conflicts.length,
       preference_disagreements: preferenceReview.summary.disagreements,
       preference_candidates: preferenceReview.summary.preference_candidates,
@@ -297,9 +327,14 @@ export function reviewConversation(db: MemoryDb, input: ReviewConversationInput)
       blocked_preferences: preferenceReview.summary.blocked_preferences,
       preference_conflicts: preferenceReview.summary.preference_conflicts,
       preference_conflict_candidates: preferenceReview.summary.preference_conflict_candidates,
+      profile_updates: profileUpdates.length,
       clarification_questions: preferenceReview.clarification_questions.length
     }
   };
+}
+
+export function reviewConversation(db: MemoryDb, input: ReviewConversationInput) {
+  return db.transaction(() => reviewConversationInternal(db, input))();
 }
 
 export function listConflicts(db: MemoryDb, status = "open"): MemoryConflict[] {
@@ -332,6 +367,9 @@ export function resolveConflict(
   id: string,
   input: { action: "accept_new" | "keep_existing" | "mark_compatible"; note?: string }
 ) {
+  if (input.note) {
+    assertSafeForStorage(input.note, "conflict resolution note");
+  }
   const conflict = getConflict(db, id);
   if (conflict.status !== "open") {
     throw new ValidationError(`Conflict ${id} is already ${conflict.status}`);
@@ -357,7 +395,7 @@ export function resolveConflict(
     }
 
     if (input.action === "accept_new") {
-      memory = approveCandidate(db, candidate.id);
+      memory = approveCandidateAfterConflictResolution(db, candidate.id);
       for (const row of openRows) {
         db.prepare("UPDATE nodes SET status = 'superseded', updated_at = ? WHERE id = ?").run(now, row.memory_id);
         createLink(db, {
@@ -385,7 +423,7 @@ export function resolveConflict(
       .get(candidate.id) as { count: number };
 
     if (remainingOpen.count === 0) {
-      memory = approveCandidate(db, candidate.id);
+      memory = approveCandidateAfterConflictResolution(db, candidate.id);
     }
   });
 

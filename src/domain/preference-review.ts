@@ -345,6 +345,8 @@ function makePreferenceCandidates(
       confidence: inferredPreferenceConfidence(signal, preference),
       risk: "low" as const,
       needs_confirmation: false,
+      privacy_level: "normal" as const,
+      speaker_role: "user" as const,
       status: "pending" as const,
       source_id: sourceId,
       metadata: {
@@ -436,7 +438,8 @@ export function reviewPreferenceSignalsFromConversation(db: MemoryDb, input: Pre
           conflicts.push(...mappedConflicts);
         }
       } else {
-        approved.push(approveCandidate(db, candidate.id));
+        const memory = approveCandidate(db, candidate.id);
+        approved.push(memory);
       }
     }
   });

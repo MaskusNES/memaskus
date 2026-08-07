@@ -27,7 +27,15 @@ function scopeMatches(scope: Scope, projectId?: string): boolean {
 export function getGraph(db: MemoryDb, query: GraphQuery = {}) {
   const status = query.status ?? "active";
   const limit = query.limit ?? 200;
-  const nodeRows = db.prepare("SELECT * FROM nodes WHERE status = ? ORDER BY updated_at DESC LIMIT ?").all(status, limit);
+  const nodeRows = query.project_id
+    ? db
+        .prepare(
+          `SELECT * FROM nodes
+           WHERE status = ? AND (scope_kind = 'global' OR (scope_kind = 'project' AND scope_project_id = ?))
+           ORDER BY updated_at DESC LIMIT ?`
+        )
+        .all(status, query.project_id, limit)
+    : db.prepare("SELECT * FROM nodes WHERE status = ? ORDER BY updated_at DESC LIMIT ?").all(status, limit);
   const nodes = nodeRows.map((row) => mapNode(row as never)).filter((node) => scopeMatches(node.scope, query.project_id));
   const nodeIds = new Set(nodes.map((node) => node.id));
 

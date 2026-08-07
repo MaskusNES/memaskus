@@ -3,6 +3,7 @@ import { NotFoundError } from "../shared/errors.js";
 import { newId } from "../shared/ids.js";
 import { nowIso } from "../shared/time.js";
 import { mapNode } from "./mappers.js";
+import { assertSafeForStorage, redactSecrets, sanitizeMetadata } from "./privacy.js";
 import { createSource, type CreateSourceInput } from "./sources.js";
 import type { MemoryNode, PrivacyLevel, Scope } from "./types.js";
 
@@ -21,7 +22,7 @@ function defaultKnowledgeScope(scope: Scope): "global" | "project_local" {
 }
 
 function normalizeMetadata(metadata: Record<string, unknown> | undefined, scope: Scope): Record<string, unknown> {
-  const normalized = { ...(metadata ?? {}) };
+  const normalized = sanitizeMetadata(metadata);
   if (normalized.knowledge_scope !== "global" && normalized.knowledge_scope !== "project_local") {
     normalized.knowledge_scope = defaultKnowledgeScope(scope);
   }
@@ -29,6 +30,7 @@ function normalizeMetadata(metadata: Record<string, unknown> | undefined, scope:
 }
 
 export function createMemory(db: MemoryDb, input: CreateMemoryInput): MemoryNode {
+  assertSafeForStorage(input.content, "memory content");
   const now = nowIso();
   const scope = input.scope ?? { kind: "global" };
   const metadata = normalizeMetadata(input.metadata, scope);
@@ -49,11 +51,11 @@ export function createMemory(db: MemoryDb, input: CreateMemoryInput): MemoryNode
     db.prepare(
       `INSERT INTO nodes (
         id, type, content, scope_kind, scope_user_id, scope_project_id,
-        scope_workspace_id, scope_agent_id, confidence, status, privacy_level,
+        scope_workspace_id, scope_agent_id, scope_conversation_id, knowledge_scope, confidence, status, privacy_level,
         metadata_json, created_at, updated_at
       ) VALUES (
         @id, @type, @content, @scope_kind, @scope_user_id, @scope_project_id,
-        @scope_workspace_id, @scope_agent_id, @confidence, @status, @privacy_level,
+        @scope_workspace_id, @scope_agent_id, @scope_conversation_id, @knowledge_scope, @confidence, @status, @privacy_level,
         @metadata_json, @created_at, @updated_at
       )`
     ).run({
@@ -65,6 +67,8 @@ export function createMemory(db: MemoryDb, input: CreateMemoryInput): MemoryNode
       scope_project_id: scope.project_id ?? null,
       scope_workspace_id: scope.workspace_id ?? null,
       scope_agent_id: scope.agent_id ?? null,
+      scope_conversation_id: scope.conversation_id ?? null,
+      knowledge_scope: metadata.knowledge_scope,
       confidence: node.confidence,
       status: node.status,
       privacy_level: node.privacy_level,
@@ -78,7 +82,7 @@ export function createMemory(db: MemoryDb, input: CreateMemoryInput): MemoryNode
       db.prepare(
         `INSERT INTO node_sources (node_id, source_id, evidence_text, created_at)
          VALUES (?, ?, ?, ?)`
-      ).run(node.id, source.id, input.source.content_excerpt ?? input.content, now);
+      ).run(node.id, source.id, redactSecrets(input.source.content_excerpt ?? input.content), now);
     }
   });
 

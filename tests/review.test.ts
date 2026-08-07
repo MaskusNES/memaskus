@@ -98,6 +98,15 @@ describe("conversation review with conflict handling", () => {
       "We decided to use PostgreSQL as storage."
     );
 
+    const bypassAttempt = await app.inject({
+      method: "POST",
+      url: `/v1/candidates/${conflict.candidate_id}/approve`
+    });
+    expect(bypassAttempt.statusCode).toBe(400);
+    expect(
+      (db.prepare("SELECT status FROM candidates WHERE id = ?").get(conflict.candidate_id) as { status: string }).status
+    ).toBe("blocked");
+
     const resolution = await app.inject({
       method: "POST",
       url: `/v1/conflicts/${conflict.id}/resolve`,

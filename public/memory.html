@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Memory Control Center</title>
+    <link rel="stylesheet" href="/memory/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">M</span>
+          <div>
+            <p class="eyebrow">Agent memory</p>
+            <h1>Центр управления памятью</h1>
+            <p id="summary">Загружаю состояние памяти…</p>
+          </div>
+        </div>
+        <nav class="nav-links" aria-label="Разделы памяти">
+          <a href="/memory" aria-current="page">Память</a>
+          <a href="/profile">Профиль</a>
+          <a href="/graph">Граф</a>
+        </nav>
+      </header>
+
+      <section class="metric-strip" aria-label="Состояние памяти">
+        <article><span id="pendingMetric">—</span><small>ждут решения</small></article>
+        <article><span id="conflictMetric">—</span><small>конфликтов</small></article>
+        <article><span id="memoryMetric">—</span><small>активных записей</small></article>
+        <article class="health-card"><span class="health-dot"></span><small>контроль включён</small></article>
+      </section>
+
+      <section class="toolbar">
+        <div class="tabs" role="tablist" aria-label="Рабочие очереди">
+          <button class="tab is-active" type="button" role="tab" data-view="review" aria-selected="true">
+            Review Inbox
+          </button>
+          <button class="tab" type="button" role="tab" data-view="conflicts" aria-selected="false">
+            Конфликты
+          </button>
+          <button class="tab" type="button" role="tab" data-view="explorer" aria-selected="false">
+            Explorer
+          </button>
+        </div>
+        <form id="filters" class="filters">
+          <label>
+            <span>Проект</span>
+            <input id="projectInput" value="project:agent-memory" autocomplete="off" />
+          </label>
+          <label class="search-field">
+            <span>Поиск</span>
+            <input id="searchInput" type="search" placeholder="Текст, тип или ID" autocomplete="off" />
+          </label>
+          <button class="button secondary" type="submit">Обновить</button>
+        </form>
+      </section>
+
+      <section class="workspace">
+        <aside class="queue-panel" aria-label="Очередь">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow" id="queueKicker">Review inbox</p>
+              <h2 id="queueTitle">Кандидаты</h2>
+            </div>
+            <span id="queueCount" class="count-badge">0</span>
+          </div>
+          <div id="queueList" class="queue-list" aria-live="polite"></div>
+        </aside>
+
+        <section class="detail-panel" aria-label="Детали выбранной записи">
+          <div id="emptyState" class="empty-state">
+            <div class="empty-mark" aria-hidden="true">◎</div>
+            <h2>Выберите запись</h2>
+            <p>Здесь появятся источник, область действия, история и доступные решения.</p>
+          </div>
+
+          <article id="candidateDetail" class="detail-card" hidden>
+            <div class="detail-heading">
+              <div>
+                <p class="eyebrow">Кандидат</p>
+                <h2 id="candidateTitle">Проверка новой памяти</h2>
+              </div>
+              <span id="candidateStatus" class="status-pill"></span>
+            </div>
+            <form id="candidateForm">
+              <div class="field-grid">
+                <label>Тип<input id="candidateType" required /></label>
+                <label>Confidence<input id="candidateConfidence" type="number" min="0" max="1" step="0.01" /></label>
+                <label>Privacy
+                  <select id="candidatePrivacy">
+                    <option value="normal">normal</option>
+                    <option value="sensitive">sensitive</option>
+                    <option value="secret">secret</option>
+                  </select>
+                </label>
+              </div>
+              <label class="wide-field">Формулировка<textarea id="candidateContent" rows="6" required></textarea></label>
+              <div id="candidateMeta" class="evidence-box"></div>
+              <div class="action-row">
+                <button class="button primary" type="button" id="approveCandidate">Одобрить</button>
+                <button class="button secondary" type="submit">Сохранить правку</button>
+                <button class="button danger-ghost" type="button" id="rejectCandidate">Отклонить</button>
+              </div>
+              <div class="merge-row">
+                <input id="mergeMemoryId" placeholder="ID существующей памяти" autocomplete="off" />
+                <button class="button secondary" type="button" id="mergeCandidate">Объединить</button>
+              </div>
+            </form>
+          </article>
+
+          <article id="conflictDetail" class="detail-card" hidden>
+            <div class="detail-heading">
+              <div>
+                <p class="eyebrow">Conflict resolution</p>
+                <h2>Какую версию оставить?</h2>
+              </div>
+              <span class="status-pill warning">требует решения</span>
+            </div>
+            <div class="comparison">
+              <section><span>Существующая память</span><p id="existingMemoryText"></p></section>
+              <section class="new-version"><span>Новая версия</span><p id="newMemoryText"></p></section>
+            </div>
+            <p id="conflictReason" class="explanation"></p>
+            <label class="wide-field">Комментарий<input id="conflictNote" placeholder="Почему выбрано это решение" /></label>
+            <div class="action-row">
+              <button class="button primary" type="button" data-conflict-action="accept_new">Принять новую</button>
+              <button class="button secondary" type="button" data-conflict-action="keep_existing">Оставить текущую</button>
+              <button class="button secondary" type="button" data-conflict-action="mark_compatible">Совместимы</button>
+            </div>
+          </article>
+
+          <article id="memoryDetail" class="detail-card" hidden>
+            <div class="detail-heading">
+              <div>
+                <p class="eyebrow" id="memoryKicker">Memory</p>
+                <h2 id="memoryTitle">Детали памяти</h2>
+              </div>
+              <span id="memoryStatus" class="status-pill"></span>
+            </div>
+            <p id="whyStored" class="explanation"></p>
+            <form id="memoryForm">
+              <div class="field-grid">
+                <label>Тип<input id="memoryType" disabled /></label>
+                <label>Confidence<input id="memoryConfidence" type="number" min="0" max="1" step="0.01" /></label>
+                <label>Privacy
+                  <select id="memoryPrivacy">
+                    <option value="normal">normal</option>
+                    <option value="sensitive">sensitive</option>
+                    <option value="secret">secret</option>
+                  </select>
+                </label>
+                <label>Scope
+                  <select id="memoryScopeKind">
+                    <option value="global">global</option>
+                    <option value="project">project</option>
+                  </select>
+                </label>
+                <label>Project<input id="memoryProject" autocomplete="off" /></label>
+              </div>
+              <label class="wide-field">Содержимое<textarea id="memoryContent" rows="6" required></textarea></label>
+              <label class="wide-field">Причина исправления<input id="memoryReason" value="manual correction" /></label>
+              <div class="action-row">
+                <button class="button primary" type="submit">Сохранить исправление</button>
+                <button class="button secondary" type="button" id="archiveMemory">Архивировать</button>
+                <button class="button danger" type="button" id="deleteMemory">Забыть</button>
+              </div>
+            </form>
+            <section class="feedback-block">
+              <h3>Оценить память</h3>
+              <div class="feedback-row" id="feedbackButtons">
+                <button type="button" data-rating="correct">Верно</button>
+                <button type="button" data-rating="wrong">Неверно</button>
+                <button type="button" data-rating="outdated">Устарело</button>
+                <button type="button" data-rating="too_broad">Слишком широко</button>
+                <button type="button" data-rating="too_narrow">Слишком узко</button>
+              </div>
+            </section>
+            <div class="evidence-grid">
+              <section><h3>Источники</h3><div id="sourceList"></div></section>
+              <section><h3>История изменений</h3><div id="revisionList"></div></section>
+            </div>
+          </article>
+
+          <article id="searchDetail" class="detail-card" hidden>
+            <div class="detail-heading">
+              <div>
+                <p class="eyebrow" id="searchKind">Explorer result</p>
+                <h2 id="searchTitle"></h2>
+              </div>
+              <span id="searchStatus" class="status-pill"></span>
+            </div>
+            <p id="searchContent" class="search-content"></p>
+            <div id="searchMetadata" class="evidence-box"></div>
+          </article>
+        </section>
+      </section>
+
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    </main>
+    <script src="/memory/app.js" type="module"></script>
+  </body>
+</html>

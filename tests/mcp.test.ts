@@ -49,6 +49,18 @@ describe("MCP memory adapter", () => {
     expect(names).toContain("memory_remember");
     expect(names).toContain("memory_review_conversation");
     expect(names).toContain("memory_resolve_conflict");
+    expect(names).toContain("memory_get_profile");
+    expect(names).toContain("memory_context");
+    expect(names).toContain("memory_update_profile");
+    expect(names).toContain("memory_list");
+    expect(names).toContain("memory_update");
+    expect(names).toContain("memory_feedback");
+    expect(names).toContain("memory_archive");
+    expect(names).toContain("memory_delete");
+    expect(names).toContain("memory_list_candidates");
+    expect(names).toContain("memory_approve_candidate");
+    expect(names).toContain("memory_reject_candidate");
+    expect(names).toContain("memory_merge_candidate");
   });
 
   it("remembers and recalls memory through MCP tools", async () => {
@@ -159,5 +171,38 @@ describe("MCP memory adapter", () => {
       disagreements: 0,
       preference_candidates: 0
     });
+  });
+
+  it("updates and reads mutable profile context through MCP", async () => {
+    await client.callTool({
+      name: "memory_update_profile",
+      arguments: {
+        topic: "github",
+        sub_topic: "repository_visibility",
+        content: "GitHub repositories should be private by default.",
+        confidence: 0.98,
+        knowledge_scope: "global"
+      }
+    });
+
+    const profile = await client.callTool({
+      name: "memory_get_profile",
+      arguments: {
+        knowledge_scope: "global",
+        topics: ["github"]
+      }
+    });
+
+    expect(JSON.stringify(profile)).toContain("private by default");
+
+    const context = await client.callTool({
+      name: "memory_context",
+      arguments: {
+        prefer_topics: ["github"]
+      }
+    });
+
+    expect(JSON.stringify(context)).toContain("User profile memory");
+    expect(JSON.stringify(context)).toContain("private by default");
   });
 });

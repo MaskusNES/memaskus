@@ -9,6 +9,8 @@ type NodeRow = {
   scope_project_id: string | null;
   scope_workspace_id: string | null;
   scope_agent_id: string | null;
+  scope_conversation_id: string | null;
+  knowledge_scope: "global" | "project_local";
   confidence: number;
   status: MemoryNode["status"];
   privacy_level: MemoryNode["privacy_level"];
@@ -49,12 +51,13 @@ export function mapNode(row: NodeRow): MemoryNode {
       user_id: row.scope_user_id ?? undefined,
       project_id: row.scope_project_id ?? undefined,
       workspace_id: row.scope_workspace_id ?? undefined,
-      agent_id: row.scope_agent_id ?? undefined
+      agent_id: row.scope_agent_id ?? undefined,
+      conversation_id: row.scope_conversation_id ?? undefined
     },
     confidence: row.confidence,
     status: row.status,
     privacy_level: row.privacy_level,
-    metadata: JSON.parse(row.metadata_json),
+    metadata: { ...JSON.parse(row.metadata_json), knowledge_scope: row.knowledge_scope },
     created_at: row.created_at,
     updated_at: row.updated_at
   };

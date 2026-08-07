@@ -1,9 +1,14 @@
 import type { MemoryDb } from "../db/connection.js";
 import { knowledgeScope, type KnowledgeScope } from "./links.js";
-import { mapNode } from "./mappers.js";
+import { mapEdge, mapNode } from "./mappers.js";
 import { redactedContent, redactSourcesForMemory } from "./privacy.js";
+import { scopeSqlParts, scopeVisibleFrom } from "./scope.js";
 import { listSourcesForNode } from "./sources.js";
-import type { MemoryNode, Scope, Source } from "./types.js";
+import type { Edge, MemoryNode, Scope, Source } from "./types.js";
+
+const GRAPH_MAX_DEPTH = 2;
+const GRAPH_HOP_DECAY = 0.7;
+const TRAVERSABLE_RELATIONS = new Set(["RELATED_TO", "SUPPORTS", "DEPENDS_ON", "ABOUT"]);
 
 export type RecallInput = {
   query: string;
@@ -55,52 +60,173 @@ function recencyBoost(memory: MemoryNode): number {
   return Math.max(0, 1 - ageDays / 30);
 }
 
-function scopeMatches(memory: MemoryNode, scope?: Scope): boolean {
-  if (!scope || scope.kind === "global") {
-    return true;
+type GraphSignal = {
+  distance: number;
+  strength: number;
+};
+
+type GraphNeighbor = {
+  id: string;
+  confidence: number;
+};
+
+function feedbackSignals(db: MemoryDb): Map<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT memory_id,
+              SUM(CASE rating
+                    WHEN 'correct' THEN 1.0
+                    WHEN 'wrong' THEN -2.0
+                    WHEN 'outdated' THEN -2.0
+                    WHEN 'too_broad' THEN -0.5
+                    WHEN 'too_narrow' THEN -0.5
+                    ELSE 0
+                  END) AS signal
+       FROM memory_feedback
+       GROUP BY memory_id`
+    )
+    .all() as Array<{ memory_id: string; signal: number }>;
+  return new Map(rows.map((row) => [row.memory_id, Math.max(-1, Math.min(1, row.signal / 2))]));
+}
+
+function graphAdjacency(db: MemoryDb, memories: MemoryNode[]): Map<string, GraphNeighbor[]> {
+  const memoriesById = new Map(memories.map((memory) => [memory.id, memory]));
+  const adjacency = new Map<string, GraphNeighbor[]>();
+  const edges = db
+    .prepare("SELECT * FROM edges WHERE status = 'active'")
+    .all()
+    .map((row) => mapEdge(row as never));
+
+  const connect = (fromId: string, toId: string, edge: Edge) => {
+    const neighbors = adjacency.get(fromId) ?? [];
+    neighbors.push({
+      id: toId,
+      confidence: Math.max(0, Math.min(1, edge.confidence))
+    });
+    adjacency.set(fromId, neighbors);
+  };
+
+  for (const edge of edges) {
+    if (!TRAVERSABLE_RELATIONS.has(edge.relation.toUpperCase())) {
+      continue;
+    }
+    const from = memoriesById.get(edge.from_id);
+    const to = memoriesById.get(edge.to_id);
+    if (!from || !to || knowledgeScope(from) !== knowledgeScope(to)) {
+      continue;
+    }
+
+    // Retrieval treats relations as semantic connectivity. Direction remains
+    // available through memory_explain, but either endpoint can lead to the other.
+    connect(edge.from_id, edge.to_id, edge);
+    connect(edge.to_id, edge.from_id, edge);
   }
 
-  if (memory.scope.kind === "global") {
-    return true;
+  return adjacency;
+}
+
+function graphSignals(
+  db: MemoryDb,
+  memories: MemoryNode[],
+  overlaps: Map<string, number>
+): Map<string, GraphSignal> {
+  const adjacency = graphAdjacency(db, memories);
+  const signals = new Map<string, GraphSignal>();
+
+  for (const [seedId, overlap] of overlaps) {
+    if (overlap <= 0) {
+      continue;
+    }
+
+    const bestForSeed = new Map<string, number>([[seedId, overlap]]);
+    let frontier = new Map<string, number>([[seedId, overlap]]);
+
+    for (let distance = 1; distance <= GRAPH_MAX_DEPTH && frontier.size > 0; distance += 1) {
+      const nextFrontier = new Map<string, number>();
+
+      for (const [nodeId, strength] of frontier) {
+        for (const neighbor of adjacency.get(nodeId) ?? []) {
+          if (neighbor.id === seedId) {
+            continue;
+          }
+
+          const nextStrength = strength * neighbor.confidence * GRAPH_HOP_DECAY;
+          if (nextStrength <= (bestForSeed.get(neighbor.id) ?? 0)) {
+            continue;
+          }
+
+          bestForSeed.set(neighbor.id, nextStrength);
+          nextFrontier.set(neighbor.id, Math.max(nextFrontier.get(neighbor.id) ?? 0, nextStrength));
+
+          const current = signals.get(neighbor.id);
+          if (!current || nextStrength > current.strength) {
+            signals.set(neighbor.id, { distance, strength: nextStrength });
+          }
+        }
+      }
+
+      frontier = nextFrontier;
+    }
   }
 
-  if (memory.scope.kind !== scope.kind) {
-    return false;
-  }
-
-  return (
-    (!scope.user_id || memory.scope.user_id === scope.user_id) &&
-    (!scope.project_id || memory.scope.project_id === scope.project_id) &&
-    (!scope.workspace_id || memory.scope.workspace_id === scope.workspace_id) &&
-    (!scope.agent_id || memory.scope.agent_id === scope.agent_id)
-  );
+  return signals;
 }
 
 export function recall(db: MemoryDb, input: RecallInput): RecallResult[] {
-  const rows = db.prepare("SELECT * FROM nodes WHERE status = 'active'").all();
-  const requestedTypes = new Set(input.types ?? []);
+  const scopeFilter = scopeSqlParts(input.scope);
+  const visibilityClause =
+    input.knowledge_scope === "global"
+      ? "knowledge_scope = 'global'"
+      : input.knowledge_scope === "project_local"
+        ? `knowledge_scope = 'project_local' AND ${scopeFilter.clause}`
+        : scopeFilter.clause;
+  const visibilityParams = input.knowledge_scope === "global" ? [] : scopeFilter.params;
+  const rows = db
+    .prepare(`SELECT * FROM nodes WHERE status = 'active' AND ${visibilityClause}`)
+    .all(...visibilityParams);
   const memories = rows
     .map((row) => mapNode(row as never))
-    .filter((memory) => requestedTypes.size === 0 || requestedTypes.has(memory.type))
     .filter((memory) => !input.knowledge_scope || knowledgeScope(memory) === input.knowledge_scope)
-    .filter((memory) => scopeMatches(memory, input.scope));
+    .filter(
+      (memory) => input.knowledge_scope === "global" || scopeVisibleFrom(memory.scope, input.scope)
+    );
+
+  const requestedTypes = new Set(input.types ?? []);
+  const overlaps = new Map(memories.map((memory) => [memory.id, tokenOverlap(input.query, memory.content)]));
+  const graphMatches = graphSignals(db, memories, overlaps);
+  const feedback = feedbackSignals(db);
 
   return memories
+    .filter((memory) => requestedTypes.size === 0 || requestedTypes.has(memory.type))
     .map((memory) => {
-      const overlap = tokenOverlap(input.query, memory.content);
-      const score = overlap * 0.65 + memory.confidence * 0.25 + recencyBoost(memory) * 0.1;
+      const overlap = overlaps.get(memory.id) ?? 0;
+      const graphMatch = graphMatches.get(memory.id);
+      const score = Math.min(
+        1,
+        overlap * 0.57 +
+          memory.confidence * 0.14 +
+          recencyBoost(memory) * 0.04 +
+          (graphMatch?.strength ?? 0) * 0.2 +
+          (feedback.get(memory.id) ?? 0) * 0.05
+      );
       return {
         overlap,
+        graphMatch,
         id: memory.id,
         type: memory.type,
         content: redactedContent(memory),
         confidence: memory.confidence,
         score: Number(score.toFixed(4)),
-        sources: input.include_sources ? redactSourcesForMemory(memory, listSourcesForNode(db, memory.id)) : undefined
+        memory
       };
     })
-    .filter((result) => result.overlap > 0)
+    .filter((result) => result.overlap > 0 || result.graphMatch)
     .sort((a, b) => b.score - a.score)
     .slice(0, input.limit ?? 10)
-    .map(({ overlap: _overlap, ...result }) => result);
+    .map(({ overlap: _overlap, graphMatch: _graphMatch, memory, ...result }) => ({
+      ...result,
+      sources: input.include_sources
+        ? redactSourcesForMemory(memory, listSourcesForNode(db, memory.id))
+        : undefined
+    }));
 }

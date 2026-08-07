@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>User Profile Memory</title>
+    <link rel="stylesheet" href="/profile/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h1>User Profile Memory</h1>
+            <p id="summary">Loading profile slots...</p>
+          </div>
+        </div>
+        <nav class="nav-links" aria-label="Memory views">
+          <a href="/memory">Memory</a>
+          <a href="/graph">Graph</a>
+          <a href="/profile" aria-current="page">Profile</a>
+        </nav>
+      </header>
+
+      <section class="controls-band" aria-label="Profile filters">
+        <form id="filters" class="filters">
+          <label>
+            Scope
+            <select id="scopeInput">
+              <option value="global">Global</option>
+              <option value="project_local">Project local</option>
+              <option value="">All matching</option>
+            </select>
+          </label>
+          <label>
+            Project
+            <input id="projectInput" value="project:agent-memory" autocomplete="off" />
+          </label>
+          <label>
+            Topics
+            <input id="topicsInput" placeholder="github, memory_backend" autocomplete="off" />
+          </label>
+          <label>
+            Status
+            <select id="statusInput">
+              <option value="active">Active</option>
+              <option value="archived">Archived</option>
+              <option value="deleted">Deleted</option>
+            </select>
+          </label>
+          <button class="primary-button" type="submit">Refresh</button>
+        </form>
+      </section>
+
+      <section class="workspace" aria-label="Profile memory workspace">
+        <aside class="slot-list-panel">
+          <div class="panel-heading">
+            <h2>Slots</h2>
+            <button id="newSlotButton" class="secondary-button" type="button">New</button>
+          </div>
+          <div id="slotList" class="slot-list" aria-live="polite"></div>
+        </aside>
+
+        <section class="detail-panel" aria-label="Selected profile slot">
+          <div id="emptyState" class="empty-state">
+            <h2>No slot selected</h2>
+            <p>Select a preference slot or create a new one.</p>
+          </div>
+
+          <form id="editor" class="editor" hidden>
+            <div class="editor-heading">
+              <div>
+                <p id="slotKicker" class="kicker">New slot</p>
+                <h2 id="slotTitle">Create profile memory</h2>
+              </div>
+              <div id="slotStatus" class="status-pill">Draft</div>
+            </div>
+
+            <div class="field-grid">
+              <label>
+                Topic
+                <input id="topicEditor" required autocomplete="off" />
+              </label>
+              <label>
+                Sub-topic
+                <input id="subTopicEditor" required autocomplete="off" />
+              </label>
+              <label>
+                Knowledge
+                <select id="knowledgeEditor">
+                  <option value="global">Global</option>
+                  <option value="project_local">Project local</option>
+                </select>
+              </label>
+              <label>
+                Project
+                <input id="projectEditor" autocomplete="off" />
+              </label>
+              <label>
+                Confidence
+                <input id="confidenceEditor" type="number" min="0" max="1" step="0.01" value="0.8" />
+              </label>
+              <label>
+                Privacy
+                <select id="privacyEditor">
+                  <option value="normal">Normal</option>
+                  <option value="sensitive">Sensitive</option>
+                  <option value="secret">Secret</option>
+                </select>
+              </label>
+            </div>
+
+            <label class="content-field">
+              Content
+              <textarea id="contentEditor" required rows="7"></textarea>
+            </label>
+
+            <label class="content-field">
+              Change reason
+              <input id="reasonEditor" placeholder="manual profile review" autocomplete="off" />
+            </label>
+
+            <div class="action-row">
+              <button class="primary-button" type="submit">Save</button>
+              <button id="archiveButton" class="danger-button" type="button">Archive</button>
+              <button id="cancelButton" class="secondary-button" type="button">Cancel</button>
+            </div>
+          </form>
+
+          <section id="revisionPanel" class="revision-panel" hidden>
+            <h3>Revisions</h3>
+            <div id="revisionList" class="revision-list"></div>
+          </section>
+        </section>
+
+        <aside class="context-panel" aria-label="Prompt context preview">
+          <div class="panel-heading">
+            <h2>Context</h2>
+            <button id="contextButton" class="secondary-button" type="button">Preview</button>
+          </div>
+          <pre id="contextPreview">No context loaded yet.</pre>
+        </aside>
+      </section>
+    </main>
+    <script src="/profile/app.js" type="module"></script>
+  </body>
+</html>

@@ -5,9 +5,11 @@ import type { MemoryDb } from "./db/connection.js";
 import { NotFoundError, ValidationError } from "./shared/errors.js";
 import { registerCandidateRoutes } from "./routes/candidates.js";
 import { registerGraphRoutes } from "./routes/graph.js";
+import { registerExplorerRoutes } from "./routes/explorer.js";
 import { registerIngestRoutes } from "./routes/ingest.js";
 import { registerLinkRoutes } from "./routes/links.js";
 import { registerMemoryRoutes } from "./routes/memories.js";
+import { registerProfileRoutes } from "./routes/profile.js";
 import { registerRecallRoutes } from "./routes/recall.js";
 import { registerReviewRoutes } from "./routes/review.js";
 
@@ -42,7 +44,6 @@ function requestApiKey(headers: Record<string, string | string[] | undefined>): 
 export async function buildServer(db: MemoryDb) {
   const app = Fastify({ logger: true });
   const apiKey = process.env.MEMORY_API_KEY;
-  const writeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
   await app.register(cors, {
     origin: (origin, callback) => {
@@ -51,7 +52,7 @@ export async function buildServer(db: MemoryDb) {
   });
 
   app.addHook("preHandler", async (request, reply) => {
-    if (!apiKey || !writeMethods.has(request.method)) {
+    if (!apiKey || !request.url.startsWith("/v1/")) {
       return;
     }
 
@@ -61,7 +62,7 @@ export async function buildServer(db: MemoryDb) {
 
     return reply.code(401).send({
       error: "unauthorized",
-      message: "A valid MEMORY_API_KEY is required for write requests"
+      message: "A valid MEMORY_API_KEY is required for memory API requests"
     });
   });
 
@@ -107,13 +108,24 @@ export async function buildServer(db: MemoryDb) {
   });
 
   app.get("/health", async () => ({ ok: true }));
+  app.get("/ready", async (_request, reply) => {
+    try {
+      db.prepare("SELECT 1").get();
+      const schemaVersion = db.pragma("user_version", { simple: true }) as number;
+      return { ok: true, schema_version: schemaVersion };
+    } catch {
+      return reply.code(503).send({ ok: false });
+    }
+  });
 
   await registerMemoryRoutes(app, db);
+  await registerProfileRoutes(app, db);
   await registerRecallRoutes(app, db);
   await registerLinkRoutes(app, db);
   await registerIngestRoutes(app, db);
   await registerCandidateRoutes(app, db);
   await registerGraphRoutes(app, db);
+  await registerExplorerRoutes(app, db);
   await registerReviewRoutes(app, db);
 
   return app;
