@@ -1,5 +1,9 @@
 # Agent Memory System Specification
 
+> Product vision and historical design notes. Some proposed components and API
+> examples differ from the current implementation. See [README.md](README.md)
+> for installation and the supported contract.
+
 ## 1. Purpose
 
 This document defines a first version of an agent-independent memory system.

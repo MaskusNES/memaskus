@@ -1,0 +1,57 @@
+name: Bug report
+description: Сообщить о воспроизводимой ошибке
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за сообщение. Не прикладывайте базы памяти, реальные диалоги,
+        credentials или другие персональные данные.
+  - type: textarea
+    id: description
+    attributes:
+      label: Описание
+      description: Что произошло и чего вы ожидали?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Воспроизведение
+      description: Минимальная последовательность команд или запросов с тестовыми данными.
+      placeholder: |
+        1. Запустить ...
+        2. Отправить ...
+        3. Наблюдать ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия или commit
+      placeholder: v0.1.0 или commit hash
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Окружение
+      placeholder: Windows 11, Node.js 22.17.0
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Безопасные логи
+      description: Удалите токены, пути, содержимое памяти и персональные данные.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Проверки
+      options:
+        - label: Я убедился, что похожего открытого issue нет.
+          required: true
+        - label: В сообщении нет секретов и пользовательских данных.
+          required: true

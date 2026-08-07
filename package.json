@@ -1,7 +1,27 @@
 {
   "name": "agent-memory",
   "version": "0.1.0",
+  "description": "Agent-independent graph memory service with HTTP, MCP and SQLite",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MaskusNES/memaskus.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MaskusNES/memaskus/issues"
+  },
+  "homepage": "https://github.com/MaskusNES/memaskus#readme",
+  "keywords": [
+    "agent-memory",
+    "mcp",
+    "knowledge-graph",
+    "sqlite",
+    "ai-agents"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",

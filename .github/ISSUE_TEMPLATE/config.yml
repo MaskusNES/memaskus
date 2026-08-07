@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/MaskusNES/memaskus/security
+    about: Не публикуйте детали уязвимости или реальные секреты в обычном issue.

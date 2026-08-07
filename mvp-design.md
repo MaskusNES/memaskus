@@ -1,5 +1,9 @@
 # Agent Memory MVP Design
 
+> Historical design document. The current implementation has progressed beyond
+> this MVP; use [README.md](README.md) and the source code as the operational
+> reference.
+
 ## 1. Goal
 
 Build a local-first prototype of an agent-independent memory service.

@@ -1,121 +1,124 @@
 # MCP Setup
 
-The memory system is hosted on the VPS. Local clients should not start the HTTP service or a local MCP process.
+Agent Memory exposes a stdio MCP adapter. The adapter is intentionally thin: it
+validates tool input and calls the HTTP service, which remains the owner of all
+storage and domain logic.
 
-## Architecture
+## Local setup
+
+Install, build and start the HTTP service:
+
+```bash
+npm ci
+npm run build
+npm start
+```
+
+Configure an MCP client with:
 
 ```text
-Codex / Claude Code / other MCP clients
-        |
-        | stdio over SSH
-        v
-VPS: /opt/agent-memory/current/dist/mcp/server.js
-        |
-        | http://127.0.0.1:39110, private to VPS
-        v
-VPS: agent-memory systemd service
-        |
-        v
-VPS: /var/lib/agent-memory/memory.sqlite
+command: node
+args:
+  - /absolute/path/to/memaskus/dist/mcp/server.js
+env:
+  MEMORY_API_URL: http://127.0.0.1:3010
+  MEMORY_API_KEY: <optional, must match the HTTP service>
 ```
 
-The HTTP service is bound to `127.0.0.1:39110` on the VPS. Do not expose it publicly.
+Use an absolute path because MCP clients often start child processes from a
+different working directory. Restart the client after changing its MCP config.
 
-## Optional Semantic Recall
+## Remote setup over SSH
 
-Semantic embeddings are disabled by default. The service continues to use FTS5,
-graph traversal, confidence, recency, and feedback when no provider is configured.
-
-To enable the OpenAI provider, put these values in `/etc/agent-memory.env` and keep
-that file readable only by the service account:
-
-```dotenv
-MEMORY_EMBEDDING_PROVIDER=openai
-OPENAI_API_KEY=<set-in-the-server-secret-store>
-MEMORY_EMBEDDING_MODEL=text-embedding-3-small
-```
-
-Optional controls are `MEMORY_EMBEDDING_DIMENSIONS`,
-`MEMORY_EMBEDDING_TIMEOUT_MS`, and `MEMORY_EMBEDDING_BASE_URL`. Normal memories
-are embedded lazily and cached in SQLite. Memories marked `sensitive` or `secret`
-are never sent to the embedding provider. Provider failures degrade to local
-indexed recall.
-
-## Retrieval Evaluation
-
-Run an evaluation dataset against a database with:
-
-```powershell
-npm run memory:eval -- --dataset .\evals\retrieval.json --db .\data\memory.sqlite --limit 10
-```
-
-The dataset is a JSON array. Each item contains `query`, `expected_ids`, and
-optional `scope`, `knowledge_scope`, and `types`. The command reports hit rate,
-recall, mean reciprocal rank, and nDCG at the selected cutoff.
-
-## Codex MCP Config
-
-Use SSH as the MCP command:
-
-```toml
-[mcp_servers.agent_memory]
-command = 'C:\Windows\System32\OpenSSH\ssh.exe'
-args = ['-i', 'C:\Users\Aorus\.ssh\codex_deploy_ed25519', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', 'root@89.125.130.230', 'cd /opt/agent-memory/current && MEMORY_API_URL=http://127.0.0.1:39110 /usr/bin/node dist/mcp/server.js']
-cwd = 'C:\Users\Aorus'
-enabled = true
-startup_timeout_sec = 30
-tool_timeout_sec = 120
-default_tools_approval_mode = "prompt"
-```
-
-Restart Codex after changing MCP config.
-
-## Visual Profile UI
-
-Open the UI through an SSH tunnel:
-
-```powershell
-ssh -i "$env:USERPROFILE\.ssh\codex_deploy_ed25519" -N -L 3010:127.0.0.1:39110 root@89.125.130.230
-```
-
-Then open:
+The recommended remote architecture keeps HTTP private to the VPS:
 
 ```text
-http://127.0.0.1:3010/profile
+MCP client
+    |
+    | stdio over SSH
+    v
+node /opt/agent-memory/current/dist/mcp/server.js
+    |
+    | http://127.0.0.1:39110
+    v
+agent-memory.service -> /var/lib/agent-memory/memory.sqlite
 ```
 
-If local port `3010` is busy, use another local port:
+Generic stdio command:
 
-```powershell
-ssh -i "$env:USERPROFILE\.ssh\codex_deploy_ed25519" -N -L 3012:127.0.0.1:39110 root@89.125.130.230
+```bash
+ssh -i /path/to/ssh-key -o BatchMode=yes user@memory-host \
+  "cd /opt/agent-memory/current && MEMORY_API_URL=http://127.0.0.1:39110 /usr/bin/node dist/mcp/server.js"
 ```
 
-Then open `http://127.0.0.1:3012/profile`.
+Use a restricted deployment account where possible. Never commit the SSH key,
+host credentials or `MEMORY_API_KEY`.
+
+To view the UI without exposing the HTTP port:
+
+```bash
+ssh -N -L 3010:127.0.0.1:39110 user@memory-host
+```
+
+Then open <http://127.0.0.1:3010/memory>, `/profile` or `/graph`.
 
 ## Tools
 
-- `memory_context`
-- `memory_list`
-- `memory_recall`
-- `memory_remember`
-- `memory_update`
-- `memory_feedback`
-- `memory_archive`
-- `memory_delete`
-- `memory_review_conversation`
-- `memory_list_candidates`
-- `memory_approve_candidate`
-- `memory_reject_candidate`
-- `memory_merge_candidate`
-- `memory_get_profile`
-- `memory_update_profile`
-- `memory_list_conflicts`
-- `memory_resolve_conflict`
-- `memory_explain`
-- `memory_graph`
+| Tool | Purpose |
+| --- | --- |
+| `memory_context` | Build compact prompt-ready profile context. |
+| `memory_get_profile` | Read mutable user profile slots. |
+| `memory_recall` | Hybrid source-backed recall by query and scope. |
+| `memory_list` | Explicitly list/search memories. |
+| `memory_remember` | Create one explicit active memory. |
+| `memory_update` | Correct an active memory and preserve a revision. |
+| `memory_feedback` | Mark memory correct, wrong, outdated or mis-scoped. |
+| `memory_review_conversation` | Review a dialogue and gate conflicts. |
+| `memory_list_candidates` | List pending or blocked candidates. |
+| `memory_approve_candidate` | Promote a candidate to active memory. |
+| `memory_reject_candidate` | Reject a candidate. |
+| `memory_merge_candidate` | Merge a candidate into an existing memory. |
+| `memory_list_conflicts` | List open or resolved conflicts. |
+| `memory_resolve_conflict` | Accept new, keep existing or mark compatible. |
+| `memory_explain` | Show sources, revisions and graph links. |
+| `memory_graph` | Return a graph snapshot. |
+| `memory_archive` | Archive while preserving audit history. |
+| `memory_delete` | Forget user-visible content and direct evidence. |
 
-## Notes
+## Recommended agent workflow
 
-MCP does not automatically receive a client's whole conversation history. The client or agent must pass dialogue text into `memory_review_conversation`.
+1. At task startup, call `memory_context` for profile preferences and
+   `memory_recall` for task-specific facts.
+2. Keep `global` and `project_local` knowledge in separate layers.
+3. Use `memory_remember` only for an explicit safe instruction to remember.
+4. Review full dialogue text with `memory_review_conversation` before durable
+   dialogue-derived writes.
+5. Mark merely related conflict candidates compatible; ask the user to resolve
+   real contradictions.
+6. Never send credentials, tokens or private keys to memory tools.
 
-Durable user preferences should be written to the mutable profile layer, not only appended as event memories. Old profile slots can be updated, archived, or superseded when better information appears.
+MCP does not automatically receive a client's conversation history. The client
+or agent must explicitly provide the relevant dialogue to
+`memory_review_conversation`.
+
+## Semantic recall
+
+Embeddings are configured on the HTTP service, not on the MCP adapter:
+
+```dotenv
+MEMORY_EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=<from-a-secret-store>
+MEMORY_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+Only `normal` memories are sent to the embedding provider. Provider failures
+degrade to local FTS5, graph and feedback retrieval.
+
+## Troubleshooting
+
+- Confirm the HTTP service: `curl http://127.0.0.1:3010/ready`.
+- Run the configured `node .../dist/mcp/server.js` command manually.
+- Check that `MEMORY_API_URL` points to the HTTP service from the MCP process.
+- If API protection is enabled, pass the same `MEMORY_API_KEY` to both processes.
+- Use an absolute script path and rebuild after code changes.
+- Keep stdout reserved for MCP messages; application diagnostics belong on stderr.

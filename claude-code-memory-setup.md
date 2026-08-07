@@ -1,126 +1,90 @@
-# Claude Code Shared Agent Memory Setup
+# Claude Code + Agent Memory
 
-The shared memory now lives on the VPS:
+This guide connects Claude Code to a running Agent Memory service through its
+stdio MCP adapter.
 
-- VPS host: `root@89.125.130.230`
-- HTTP memory service: `http://127.0.0.1:39110`, private to the VPS
-- SQLite database: `/var/lib/agent-memory/memory.sqlite`
-- MCP stdio adapter: `/opt/agent-memory/current/dist/mcp/server.js`, launched over SSH
-- Claude subagent file in this repo: `.claude/agents/agent-memory-reviewer.md`
+## Local service
 
-Claude and Codex should not run local memory services. They should connect to the same remote MCP command over SSH.
+Build and start Agent Memory:
 
-## 1. Add Remote MCP To Claude Code
+```bash
+npm ci
+npm run build
+npm start
+```
 
-If an old local MCP entry exists, remove it first:
+Remove an obsolete MCP entry if needed:
 
-```powershell
+```bash
 claude mcp remove agent_memory
 ```
 
-Then add the remote MCP server globally:
+Add the local adapter. Replace the script path with an absolute path:
 
-```powershell
-claude mcp add --transport stdio --scope user agent_memory -- ssh.exe -i "$env:USERPROFILE\.ssh\codex_deploy_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=accept-new root@89.125.130.230 "cd /opt/agent-memory/current && MEMORY_API_URL=http://127.0.0.1:39110 /usr/bin/node dist/mcp/server.js"
+```bash
+claude mcp add --transport stdio --scope user agent_memory -- \
+  node /absolute/path/to/memaskus/dist/mcp/server.js
 ```
+
+The adapter defaults to `http://127.0.0.1:3010`. If the service uses another
+address or an API key, provide `MEMORY_API_URL` and `MEMORY_API_KEY` in the MCP
+process environment supported by your Claude Code configuration.
 
 Verify:
 
-```powershell
+```bash
 claude mcp list
 claude mcp get agent_memory
 ```
 
 Inside Claude Code, `/mcp` should show `agent_memory`.
 
-## 2. Install The Claude Subagent
+## Remote service over SSH
 
-Project-level copy:
+For a service bound to the VPS loopback interface:
+
+```bash
+claude mcp add --transport stdio --scope user agent_memory -- \
+  ssh -i /path/to/ssh-key -o BatchMode=yes user@memory-host \
+  "cd /opt/agent-memory/current && MEMORY_API_URL=http://127.0.0.1:39110 /usr/bin/node dist/mcp/server.js"
+```
+
+Use your own host, account and SSH key. Keep credentials outside the repository.
+
+## Suggested instructions
+
+Add project instructions equivalent to:
 
 ```text
-C:\Users\Aorus\OneDrive\Документы\memaskus\.claude\agents\agent-memory-reviewer.md
+Before project work, call memory_context for project-local profile context and
+memory_recall for relevant facts. Keep global and project-local knowledge
+separate. Use memory_remember only for explicit safe requests. For dialogue
+review, pass the full relevant dialogue to memory_review_conversation, treat
+merely related memories as compatible, and ask the user before resolving a real
+contradiction. Never store credentials or secrets.
 ```
 
-Global Claude Code copy:
+## Suggested prompts
+
+Recall context:
 
 ```text
-C:\Users\Aorus\.claude\agents\agent-memory-reviewer.md
+Use agent_memory: load memory_context and memory_recall for this task, then apply
+the relevant preferences and project decisions.
 ```
 
-Install or refresh it:
-
-```powershell
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\agents"
-Copy-Item -LiteralPath "C:\Users\Aorus\OneDrive\Документы\memaskus\.claude\agents\agent-memory-reviewer.md" -Destination "$env:USERPROFILE\.claude\agents\agent-memory-reviewer.md" -Force
-```
-
-Restart Claude Code if this is the first time `~/.claude/agents` was created.
-
-## 3. Visual UI
-
-The profile UI is available through an SSH tunnel:
-
-```powershell
-ssh -i "$env:USERPROFILE\.ssh\codex_deploy_ed25519" -N -L 3010:127.0.0.1:39110 root@89.125.130.230
-```
-
-Open:
+Review a conversation:
 
 ```text
-http://127.0.0.1:3010/profile
+Review this dialogue through memory_review_conversation. Store only durable,
+source-backed knowledge. Mark related but non-contradictory memories compatible,
+and show real contradictions before resolving them.
 ```
 
-If local `3010` is busy, use `3011` locally:
+## Troubleshooting
 
-```powershell
-ssh -i "$env:USERPROFILE\.ssh\codex_deploy_ed25519" -N -L 3012:127.0.0.1:39110 root@89.125.130.230
-```
-
-Then open `http://127.0.0.1:3012/profile`.
-
-## 4. Prompts To Use In Claude Code
-
-Check availability:
-
-```text
-Какие MCP tools тебе доступны? Есть ли agent_memory? Видишь ли subagent agent-memory-reviewer?
-```
-
-Save current dialogue:
-
-```text
-Воспользуйся agent-memory-reviewer: проанализируй текущий диалог и сохрани долговременные знания в agent_memory. Если найдешь реальные конфликты, явно покажи их мне перед записью. Если конфликт-кандидат не является настоящим противоречием, отметь его compatible.
-```
-
-Recall shared memory:
-
-```text
-Воспользуйся agent_memory: вызови memory_context и memory_get_profile для текущей задачи, затем учти найденные предпочтения пользователя.
-```
-
-Review pasted dialogue:
-
-```text
-Воспользуйся agent-memory-reviewer для этого диалога. Сохраняй durable memory content на русском. Сначала покажи мне реальные конфликты, если они есть.
-
-<сюда вставить диалог>
-```
-
-## 5. If Claude Cannot See The Tool
-
-1. Check SSH access:
-
-```powershell
-ssh -i "$env:USERPROFILE\.ssh\codex_deploy_ed25519" -o BatchMode=yes root@89.125.130.230 "systemctl is-active agent-memory"
-```
-
-2. Run:
-
-```powershell
-claude mcp list
-claude mcp get agent_memory
-```
-
-3. If `agent_memory` is missing, run the `claude mcp add ...` command again.
-4. If the agent file was just created, restart Claude Code.
-5. In Claude Code, run `/mcp` and approve/trust the server if prompted.
+1. Confirm `/ready` on the HTTP service.
+2. Run the configured MCP command manually and inspect stderr.
+3. Check `claude mcp list` and `claude mcp get agent_memory`.
+4. Use an absolute path to `dist/mcp/server.js`.
+5. Rebuild after pulling updates and restart Claude Code after config changes.

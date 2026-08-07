@@ -1,0 +1,40 @@
+name: Feature request
+description: Предложить улучшение Agent Memory
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Проблема
+      description: Какую пользовательскую или интеграционную проблему нужно решить?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Предлагаемое решение
+      description: Опишите желаемое поведение и внешний контракт.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Альтернативы и компромиссы
+      description: Какие другие варианты вы рассматривали?
+  - type: dropdown
+    id: area
+    attributes:
+      label: Область
+      options:
+        - Recall and ranking
+        - Graph and data model
+        - MCP integration
+        - HTTP API and CLI
+        - Privacy and security
+        - UI
+        - Deployment and operations
+        - Documentation
+        - Other
+    validations:
+      required: true
