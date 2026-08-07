@@ -73,18 +73,18 @@ dialogue was saved.
   "agent_analysis": {
     "disagreements": [
       {
-        "user_text": "No, ask me before replacing an existing decision.",
-        "assistant_context": "I will automatically overwrite the old value.",
+        "user_text": "No, export the monthly report as PDF.",
+        "assistant_context": "I will export the monthly report as HTML.",
         "reason_is_clear": true,
-        "inferred_reason": "The user wants control over durable conflict resolution.",
+        "inferred_reason": "The user explicitly selected the monthly report format.",
         "demonstrated_preferences": [
           {
-            "content": "The user prefers explicit confirmation before replacing a conflicting durable decision.",
+            "content": "The user prefers monthly reports in PDF format.",
             "confidence": 0.95,
             "knowledge_scope": "global"
           }
         ],
-        "demonstrated_values": ["user control over persistent state"],
+        "demonstrated_values": ["portable report output"],
         "confidence": 0.93
       }
     ]

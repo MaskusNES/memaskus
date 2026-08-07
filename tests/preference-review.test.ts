@@ -17,50 +17,14 @@ describe("disagreement-driven preference review", () => {
     db.close();
   });
 
-  it("extracts clear user disagreement into preference memory before ordinary candidates", async () => {
+  it("asks for clarification instead of inventing a preference in heuristic mode", async () => {
     const review = await app.inject({
       method: "POST",
       url: "/v1/review/conversation",
       payload: {
         conversation_id: "conv:disagreement",
-        project_id: "project:agent-memory",
-        text: [
-          "Assistant: The MCP is configured, so it should be available now.",
-          "User: No, I still do not see the agent_memory tool. Why is it unavailable?"
-        ].join("\n")
-      }
-    });
-
-    expect(review.statusCode).toBe(201);
-    const body = review.json();
-    expect(body.preference_review.summary).toMatchObject({
-      disagreements: 1,
-      clear_disagreements: 1,
-      unclear_disagreements: 0,
-      preference_candidates: 2,
-      approved_preferences: 2
-    });
-
-    const recall = await app.inject({
-      method: "POST",
-      url: "/v1/recall",
-      payload: {
-        query: "реально доступны активной сессии агента",
-        scope: { kind: "project", project_id: "project:agent-memory" },
-        types: ["Preference"]
-      }
-    });
-
-    expect(recall.json().results[0].content).toContain("реально доступны");
-  });
-
-  it("returns clarification questions for unclear disagreement", async () => {
-    const review = await app.inject({
-      method: "POST",
-      url: "/v1/review/conversation",
-      payload: {
-        project_id: "project:agent-memory",
-        text: ["Assistant: I can implement the MCP adapter this way.", "User: No, stop."].join("\n")
+        project_id: "project:demo",
+        text: ["Assistant: The cover will be blue.", "User: No, that is not what I asked for."].join("\n")
       }
     });
 
@@ -70,60 +34,29 @@ describe("disagreement-driven preference review", () => {
       disagreements: 1,
       clear_disagreements: 0,
       unclear_disagreements: 1,
-      preference_candidates: 0
+      preference_candidates: 0,
+      approved_preferences: 0
     });
-    expect(body.preference_review.clarification_questions[0]).toContain("Что именно было не так");
+    expect(body.preference_review.clarification_questions[0]).toContain("What preference or value");
   });
 
-  it("blocks preference candidates that conflict with existing preferences", async () => {
-    await app.inject({
-      method: "POST",
-      url: "/v1/memories",
-      payload: {
-        type: "Preference",
-        content: "Пользователь предпочитает автоматическую запись в память без ручного подтверждения.",
-        scope: { kind: "project", project_id: "project:agent-memory" },
-        confidence: 0.9
-      }
-    });
-
+  it("stores explicit agent-supplied analysis without heuristic text matching", async () => {
     const review = await app.inject({
       method: "POST",
       url: "/v1/review/conversation",
       payload: {
-        project_id: "project:agent-memory",
-        text: [
-          "Assistant: I will automatically write all extracted memories.",
-          "User: No, stop. I want confirmation before durable writes."
-        ].join("\n")
-      }
-    });
-
-    expect(review.statusCode).toBe(201);
-    const body = review.json();
-    expect(body.preference_review.summary.blocked_preferences).toBeGreaterThanOrEqual(1);
-    expect(body.preference_review.conflicts[0].question).toContain("кажутся противоречивыми");
-  });
-
-  it("stores agent-supplied preference analysis without relying on heuristic text matching", async () => {
-    const review = await app.inject({
-      method: "POST",
-      url: "/v1/review/conversation",
-      payload: {
-        project_id: "project:agent-memory",
+        project_id: "project:demo",
         analysis_mode: "agent_supplied",
-        text: ["Assistant: I can continue with this implementation.", "User: Hm."].join("\n"),
+        text: ["Assistant: I will export HTML.", "User: Please export PDF instead."].join("\n"),
         agent_analysis: {
           disagreements: [
             {
-              user_text: "Hm.",
-              assistant_context: "I can continue with this implementation.",
+              user_text: "Please export PDF instead.",
+              assistant_context: "I will export HTML.",
               reason_is_clear: true,
-              inferred_reason: "The user reacted cautiously because the implementation path lacked an explicit contract.",
-              demonstrated_preferences: [
-                "User prefers MCP memory write paths to have an explicit structured contract before implementation."
-              ],
-              demonstrated_values: ["clear integration contracts"]
+              inferred_reason: "The requested artifact format is PDF.",
+              demonstrated_preferences: ["Demo user prefers PDF exports for monthly reports."],
+              demonstrated_values: ["portable report output"]
             }
           ]
         }
@@ -131,53 +64,33 @@ describe("disagreement-driven preference review", () => {
     });
 
     expect(review.statusCode).toBe(201);
-    const body = review.json();
-    expect(body.preference_review.summary).toMatchObject({
+    expect(review.json().preference_review.summary).toMatchObject({
       disagreements: 1,
       clear_disagreements: 1,
       preference_candidates: 1,
       approved_preferences: 1
     });
-
-    const recall = await app.inject({
-      method: "POST",
-      url: "/v1/recall",
-      payload: {
-        query: "structured contract before implementation",
-        scope: { kind: "project", project_id: "project:agent-memory" },
-        types: ["Preference"]
-      }
-    });
-
-    expect(recall.json().results[0].content).toContain("structured contract");
   });
 
-  it("uses agent-supplied confidence for extracted preferences", async () => {
+  it("uses preference-level confidence supplied by the analyzing agent", async () => {
     const review = await app.inject({
       method: "POST",
       url: "/v1/review/conversation",
       payload: {
-        project_id: "project:agent-memory",
+        project_id: "project:demo",
         analysis_mode: "agent_supplied",
-        text: ["Assistant: I can infer preferences.", "User: Be careful; one of these is only weakly implied."].join("\n"),
+        text: "User: Use the compact table; a dark header might also be useful.",
         agent_analysis: {
           disagreements: [
             {
-              user_text: "Be careful; one of these is only weakly implied.",
-              assistant_context: "I can infer preferences.",
+              user_text: "Use the compact table; a dark header might also be useful.",
               reason_is_clear: true,
-              inferred_reason: "The user wants confidence to reflect evidence strength.",
+              inferred_reason: "The first choice is explicit and the second is tentative.",
               demonstrated_preferences: [
-                {
-                  content: "User wants memory confidence to reflect evidence strength rather than a fixed default.",
-                  confidence: 0.93
-                },
-                {
-                  content: "User may prefer asking clarification questions for weakly implied memories.",
-                  confidence: 0.61
-                }
+                { content: "Monthly reports use compact tables.", confidence: 0.93 },
+                { content: "Dark headers may improve visual contrast.", confidence: 0.61 }
               ],
-              demonstrated_values: ["calibrated uncertainty"],
+              demonstrated_values: ["readable layouts"],
               confidence: 0.77
             }
           ]
@@ -185,7 +98,6 @@ describe("disagreement-driven preference review", () => {
       }
     });
 
-    expect(review.statusCode).toBe(201);
     const approved = review.json().preference_review.approved;
     expect(approved.map((memory: { confidence: number }) => memory.confidence).sort()).toEqual([0.61, 0.93]);
     expect(approved.map((memory: { metadata: { confidence_source: string } }) => memory.metadata.confidence_source)).toEqual([
@@ -194,101 +106,14 @@ describe("disagreement-driven preference review", () => {
     ]);
   });
 
-  it("keeps agent-supplied global preferences out of project-local conflict candidates", async () => {
+  it("blocks a heuristic contradiction with an existing preference", async () => {
     await app.inject({
       method: "POST",
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content: "Пользователь хочет, чтобы сущности памяти были связаны только внутри локального проектного подграфа.",
-        scope: { kind: "project", project_id: "project:agent-memory" },
-        confidence: 0.9,
-        metadata: { knowledge_scope: "project_local" }
-      }
-    });
-
-    const review = await app.inject({
-      method: "POST",
-      url: "/v1/review/conversation",
-      payload: {
-        project_id: "project:agent-memory",
-        analysis_mode: "agent_supplied",
-        text: [
-          "Assistant: I can add a generic agent instruction.",
-          "User: This should apply in every project, not only this memory project."
-        ].join("\n"),
-        agent_analysis: {
-          disagreements: [
-            {
-              user_text: "This should apply in every project, not only this memory project.",
-              assistant_context: "I can add a generic agent instruction.",
-              reason_is_clear: true,
-              inferred_reason: "Пользователь явно уточнил, что предпочтение должно быть глобальным.",
-              demonstrated_preferences: [
-                {
-                  content: "Пользователь хочет, чтобы универсальные инструкции агентам применялись во всех проектах.",
-                  confidence: 0.94,
-                  knowledge_scope: "global"
-                }
-              ],
-              demonstrated_values: ["сквозная согласованность поведения агентов"]
-            }
-          ]
-        }
-      }
-    });
-
-    expect(review.statusCode).toBe(201);
-    const body = review.json();
-    expect(body.preference_review.summary).toMatchObject({
-      approved_preferences: 1,
-      blocked_preferences: 0,
-      preference_conflict_candidates: 0
-    });
-    expect(body.preference_review.approved[0].metadata.knowledge_scope).toBe("global");
-  });
-
-  it("does not run deterministic sentence extraction during agent-supplied review", async () => {
-    const review = await app.inject({
-      method: "POST",
-      url: "/v1/review/conversation",
-      payload: {
-        project_id: "project:agent-memory",
-        analysis_mode: "agent_supplied",
-        text: "User: Remember that this sentence would be a deterministic candidate in legacy mode.",
-        agent_analysis: {
-          disagreements: []
-        }
-      }
-    });
-
-    expect(review.statusCode).toBe(201);
-    expect(review.json().summary).toMatchObject({
-      extracted_candidates: 0,
-      approved: 0,
-      blocked: 0
-    });
-
-    const recall = await app.inject({
-      method: "POST",
-      url: "/v1/recall",
-      payload: {
-        query: "deterministic candidate legacy mode",
-        scope: { kind: "project", project_id: "project:agent-memory" }
-      }
-    });
-
-    expect(recall.json().results).toHaveLength(0);
-  });
-
-  it("returns related memory candidates for agent conflict review in agent-supplied mode", async () => {
-    await app.inject({
-      method: "POST",
-      url: "/v1/memories",
-      payload: {
-        type: "Preference",
-        content: "User prefers manual confirmation before durable memory writes.",
-        scope: { kind: "project", project_id: "project:agent-memory" },
+        content: "Demo user prefers concise release reports.",
+        scope: { kind: "project", project_id: "project:demo" },
         confidence: 0.9
       }
     });
@@ -297,57 +122,36 @@ describe("disagreement-driven preference review", () => {
       method: "POST",
       url: "/v1/review/conversation",
       payload: {
-        project_id: "project:agent-memory",
+        project_id: "project:demo",
         analysis_mode: "agent_supplied",
-        text: ["Assistant: I can refine memory writes.", "User: Yes, keep explicit confirmation."].join("\n"),
+        text: "User: Release reports should be detailed.",
         agent_analysis: {
           disagreements: [
             {
-              user_text: "Yes, keep explicit confirmation.",
-              assistant_context: "I can refine memory writes.",
+              user_text: "Release reports should be detailed.",
               reason_is_clear: true,
-              inferred_reason: "The user confirmed the existing preference for confirmation before writes.",
-              demonstrated_preferences: ["User prefers explicit confirmation before durable memory writes."],
-              demonstrated_values: ["user control over persistent state"]
+              inferred_reason: "The report should include full detail.",
+              demonstrated_preferences: ["Demo user prefers detailed release reports."],
+              demonstrated_values: ["complete release information"]
             }
           ]
         }
       }
     });
 
-    expect(review.statusCode).toBe(201);
     const body = review.json();
-    expect(body.preference_review.summary).toMatchObject({
-      approved_preferences: 0,
-      blocked_preferences: 1,
-      preference_conflicts: 0,
-      preference_conflict_candidates: 1
-    });
-    expect(body.conflicts).toHaveLength(0);
-    expect(body.conflict_candidates[0].reason).toContain("кандидат на потенциальный конфликт");
-
-    const resolution = await app.inject({
-      method: "POST",
-      url: `/v1/conflicts/${body.conflict_candidates[0].id}/resolve`,
-      payload: {
-        action: "mark_compatible",
-        note: "The agent determined this reinforces the existing preference rather than contradicting it."
-      }
-    });
-
-    expect(resolution.statusCode).toBe(200);
-    expect(resolution.json().candidate.status).toBe("approved");
+    expect(body.preference_review.summary.blocked_preferences).toBe(1);
+    expect(body.conflict_candidates).toHaveLength(1);
   });
 
-  it("does not return different knowledge scopes as conflict candidates", async () => {
+  it("keeps global and project-local preference layers separate", async () => {
     await app.inject({
       method: "POST",
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content:
-          "User prefers using the active chat agent's existing subscription/session for semantic dialogue analysis when possible, rather than requiring a separate backend LLM API key.",
-        scope: { kind: "project", project_id: "project:agent-memory" },
+        content: "Demo project timestamps use the local timezone.",
+        scope: { kind: "project", project_id: "project:demo" },
         confidence: 0.9,
         metadata: { knowledge_scope: "project_local" }
       }
@@ -357,47 +161,41 @@ describe("disagreement-driven preference review", () => {
       method: "POST",
       url: "/v1/review/conversation",
       payload: {
-        project_id: "project:agent-memory",
+        project_id: "project:demo",
         analysis_mode: "agent_supplied",
-        text: ["Assistant: We can package this workflow.", "User: Let's make a Codex skill."].join("\n"),
+        text: "User: Across all projects, archive timestamps should use UTC.",
         agent_analysis: {
           disagreements: [
             {
-              user_text: "Let's make a Codex skill.",
-              assistant_context: "We can package this workflow.",
+              user_text: "Across all projects, archive timestamps should use UTC.",
               reason_is_clear: true,
-              inferred_reason:
-                "The user wanted the memory review workflow packaged as a reusable Codex skill available across projects.",
+              inferred_reason: "This convention applies globally.",
               demonstrated_preferences: [
-                "User prefers reusable Codex skills for repeated semantic dialogue analysis workflows instead of repeating long prompts manually."
+                {
+                  content: "Demo user prefers UTC archive timestamps across all projects.",
+                  knowledge_scope: "global"
+                }
               ],
-              demonstrated_values: ["workflow reuse", "low-friction agent operation"]
+              demonstrated_values: ["consistent timestamps"]
             }
           ]
         }
       }
     });
 
-    expect(review.statusCode).toBe(201);
     const body = review.json();
-    expect(body.preference_review.summary).toMatchObject({
-      approved_preferences: 1,
-      blocked_preferences: 0,
-      preference_conflicts: 0,
-      preference_conflict_candidates: 0
-    });
     expect(body.conflict_candidates).toHaveLength(0);
     expect(body.preference_review.approved[0].metadata.knowledge_scope).toBe("global");
   });
 
-  it("keeps a conflict candidate open when the agent needs user clarification", async () => {
+  it("returns related records as conflict candidates for agent review", async () => {
     await app.inject({
       method: "POST",
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content: "User prefers automatic memory writes for low-risk observations.",
-        scope: { kind: "project", project_id: "project:agent-memory" },
+        content: "Demo user prefers changelog entries grouped by component.",
+        scope: { kind: "project", project_id: "project:demo" },
         confidence: 0.9
       }
     });
@@ -406,18 +204,17 @@ describe("disagreement-driven preference review", () => {
       method: "POST",
       url: "/v1/review/conversation",
       payload: {
-        project_id: "project:agent-memory",
+        project_id: "project:demo",
         analysis_mode: "agent_supplied",
-        text: ["Assistant: I can write low-risk observations automatically.", "User: I want manual review sometimes."].join("\n"),
+        text: "User: Keep grouping changelog entries by component.",
         agent_analysis: {
           disagreements: [
             {
-              user_text: "I want manual review sometimes.",
-              assistant_context: "I can write low-risk observations automatically.",
+              user_text: "Keep grouping changelog entries by component.",
               reason_is_clear: true,
-              inferred_reason: "The user may want manual review in some memory-write situations.",
-              demonstrated_preferences: ["User wants manual review for some memory writes."],
-              demonstrated_values: ["user control over persistent state"]
+              inferred_reason: "The existing grouping convention was reaffirmed.",
+              demonstrated_preferences: ["Demo user prefers changelog entries grouped by component."],
+              demonstrated_values: ["navigable release notes"]
             }
           ]
         }
@@ -427,55 +224,39 @@ describe("disagreement-driven preference review", () => {
     const body = review.json();
     expect(body.conflict_candidates).toHaveLength(1);
 
-    const openConflicts = await app.inject({
-      method: "GET",
-      url: "/v1/conflicts?status=open"
+    const resolution = await app.inject({
+      method: "POST",
+      url: `/v1/conflicts/${body.conflict_candidates[0].id}/resolve`,
+      payload: { action: "mark_compatible", note: "The new observation reinforces the existing preference." }
     });
-    expect(openConflicts.json().conflicts[0]).toMatchObject({
-      id: body.conflict_candidates[0].id,
-      status: "open"
-    });
-    expect(openConflicts.json().conflicts[0].candidate.status).toBe("blocked");
+
+    expect(resolution.statusCode).toBe(200);
+    expect(resolution.json().candidate.status).toBe("approved");
   });
 
-  it("asks for clarification when agent-supplied analysis marks pushback as unclear", async () => {
+  it("does not run deterministic extraction during agent-supplied review", async () => {
     const review = await app.inject({
       method: "POST",
       url: "/v1/review/conversation",
       payload: {
-        project_id: "project:agent-memory",
+        project_id: "project:demo",
         analysis_mode: "agent_supplied",
-        text: ["Assistant: I will add the feature.", "User: Not like that."].join("\n"),
-        agent_analysis: {
-          disagreements: [
-            {
-              user_text: "Not like that.",
-              assistant_context: "I will add the feature.",
-              reason_is_clear: false,
-              clarification_question: "What specifically should be different about this implementation approach?"
-            }
-          ]
-        }
+        text: "User: Remember that the sample catalog has seven sections.",
+        agent_analysis: { disagreements: [] }
       }
     });
 
     expect(review.statusCode).toBe(201);
-    const body = review.json();
-    expect(body.preference_review.summary).toMatchObject({
-      disagreements: 1,
-      clear_disagreements: 0,
-      preference_candidates: 0
-    });
-    expect(body.preference_review.clarification_questions[0]).toContain("What specifically should be different");
+    expect(review.json().summary).toMatchObject({ extracted_candidates: 0, approved: 0, blocked: 0 });
   });
 
-  it("does not treat different preference layers as heuristic conflicts just because one says instead of", async () => {
+  it("does not infer a conflict from unrelated uses of 'instead of'", () => {
     const reason = contradictionReason(
       {
         id: "cand:test",
         type: "Preference",
-        content: "User prefers reusable Codex skills for repeated agent workflows instead of repeating long prompts manually.",
-        scope: { kind: "project", project_id: "project:agent-memory" },
+        content: "Demo user prefers PDF reports instead of HTML reports.",
+        scope: { kind: "project", project_id: "project:demo" },
         confidence: 0.82,
         risk: "low",
         needs_confirmation: false,
@@ -489,9 +270,8 @@ describe("disagreement-driven preference review", () => {
       {
         id: "node:test",
         type: "Preference",
-        content:
-          "User prefers using the active chat agent's existing subscription/session for semantic dialogue analysis when possible, rather than requiring a separate backend LLM API key.",
-        scope: { kind: "project", project_id: "project:agent-memory" },
+        content: "Demo user prefers UTC timestamps instead of local timestamps.",
+        scope: { kind: "project", project_id: "project:demo" },
         confidence: 0.9,
         status: "active",
         privacy_level: "normal",

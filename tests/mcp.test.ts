@@ -94,7 +94,7 @@ describe("MCP memory adapter", () => {
       name: "memory_remember",
       arguments: {
         type: "Decision",
-        content: "The MVP will use SQLite as storage.",
+        content: "The demo formatter will use Python for implementation.",
         scope: {
           project_id: "project:agent-memory"
         },
@@ -108,7 +108,7 @@ describe("MCP memory adapter", () => {
         conversation_id: "conv:mcp-test",
         project_id: "project:agent-memory",
         analysis_mode: "heuristic",
-        text: "User: We decided to use PostgreSQL as storage."
+        text: "User: We decided to use Rust for the demo formatter implementation."
       }
     });
 
@@ -126,7 +126,7 @@ describe("MCP memory adapter", () => {
       arguments: {
         id: reviewBody.conflicts[0].id,
         action: "accept_new",
-        note: "The database choice changed during planning."
+        note: "The implementation language changed during planning."
       }
     });
 
@@ -135,14 +135,14 @@ describe("MCP memory adapter", () => {
     const recall = await client.callTool({
       name: "memory_recall",
       arguments: {
-        query: "PostgreSQL storage",
+        query: "Rust demo formatter implementation",
         scope: {
           project_id: "project:agent-memory"
         }
       }
     });
 
-    expect(JSON.stringify(recall)).toContain("We decided to use PostgreSQL as storage.");
+    expect(JSON.stringify(recall)).toContain("We decided to use Rust for the demo formatter implementation.");
   });
 
   it("defaults MCP preference review to agent-supplied analysis", async () => {
@@ -152,8 +152,8 @@ describe("MCP memory adapter", () => {
         conversation_id: "conv:mcp-agent-supplied-default",
         project_id: "project:agent-memory",
         text: [
-          "Assistant: The MCP is configured, so it should be available now.",
-          "User: No, I still do not see the agent_memory tool. Why is it unavailable?"
+          "Assistant: The sample cover will be blue.",
+          "User: No, the sample cover should be green."
         ].join("\n")
       }
     });
@@ -178,8 +178,8 @@ describe("MCP memory adapter", () => {
       name: "memory_update_profile",
       arguments: {
         topic: "github",
-        sub_topic: "repository_visibility",
-        content: "GitHub repositories should be private by default.",
+        sub_topic: "issue_title_format",
+        content: "GitHub issue titles begin with a bracketed component name.",
         confidence: 0.98,
         knowledge_scope: "global"
       }
@@ -193,7 +193,7 @@ describe("MCP memory adapter", () => {
       }
     });
 
-    expect(JSON.stringify(profile)).toContain("private by default");
+    expect(JSON.stringify(profile)).toContain("bracketed component name");
 
     const context = await client.callTool({
       name: "memory_context",
@@ -203,6 +203,6 @@ describe("MCP memory adapter", () => {
     });
 
     expect(JSON.stringify(context)).toContain("User profile memory");
-    expect(JSON.stringify(context)).toContain("private by default");
+    expect(JSON.stringify(context)).toContain("bracketed component name");
   });
 });

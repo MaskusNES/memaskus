@@ -23,7 +23,7 @@ describe("conversation review with conflict handling", () => {
       payload: {
         conversation_id: "conv:safe",
         project_id: "project:agent-memory",
-        text: "User: Remember that the memory service uses graph nodes for durable knowledge."
+        text: "User: Remember that the sample catalog stores a publication year for each book."
       }
     });
 
@@ -39,12 +39,12 @@ describe("conversation review with conflict handling", () => {
       method: "POST",
       url: "/v1/recall",
       payload: {
-        query: "graph nodes durable knowledge",
+        query: "sample catalog publication year",
         scope: { kind: "project", project_id: "project:agent-memory" }
       }
     });
 
-    expect(recall.json().results[0].content).toContain("graph nodes");
+    expect(recall.json().results[0].content).toContain("publication year");
   });
 
   it("blocks conflicting candidates until the user accepts the new information", async () => {
@@ -53,7 +53,7 @@ describe("conversation review with conflict handling", () => {
       url: "/v1/memories",
       payload: {
         type: "Decision",
-        content: "The MVP will use SQLite as storage.",
+        content: "The demo formatter will use Python for implementation.",
         scope: { kind: "project", project_id: "project:agent-memory" },
         confidence: 0.95
       }
@@ -67,7 +67,7 @@ describe("conversation review with conflict handling", () => {
       payload: {
         conversation_id: "conv:conflict",
         project_id: "project:agent-memory",
-        text: "User: We decided to use PostgreSQL as storage."
+        text: "User: We decided to use Rust for the demo formatter implementation."
       }
     });
 
@@ -90,12 +90,12 @@ describe("conversation review with conflict handling", () => {
       method: "POST",
       url: "/v1/recall",
       payload: {
-        query: "PostgreSQL storage",
+        query: "Rust demo formatter implementation",
         scope: { kind: "project", project_id: "project:agent-memory" }
       }
     });
     expect(recallBeforeResolution.json().results.map((result: { content: string }) => result.content)).not.toContain(
-      "We decided to use PostgreSQL as storage."
+      "We decided to use Rust for the demo formatter implementation."
     );
 
     const bypassAttempt = await app.inject({
@@ -112,7 +112,7 @@ describe("conversation review with conflict handling", () => {
       url: `/v1/conflicts/${conflict.id}/resolve`,
       payload: {
         action: "accept_new",
-        note: "The database choice changed during planning."
+        note: "The implementation language changed during planning."
       }
     });
 
@@ -123,17 +123,17 @@ describe("conversation review with conflict handling", () => {
       method: "POST",
       url: "/v1/recall",
       payload: {
-        query: "PostgreSQL storage",
+        query: "Rust demo formatter implementation",
         scope: { kind: "project", project_id: "project:agent-memory" }
       }
     });
-    expect(recallAfterResolution.json().results[0].content).toBe("We decided to use PostgreSQL as storage.");
+    expect(recallAfterResolution.json().results[0].content).toBe("We decided to use Rust for the demo formatter implementation.");
 
     const sqliteRecall = await app.inject({
       method: "POST",
       url: "/v1/recall",
       payload: {
-        query: "SQLite storage",
+        query: "Python formatter implementation",
         scope: { kind: "project", project_id: "project:agent-memory" }
       }
     });
@@ -146,7 +146,7 @@ describe("conversation review with conflict handling", () => {
       url: "/v1/memories",
       payload: {
         type: "Decision",
-        content: "The MVP will use SQLite as storage.",
+        content: "The demo formatter will use Python for implementation.",
         scope: { kind: "project", project_id: "project:agent-memory" },
         confidence: 0.95
       }
@@ -157,7 +157,7 @@ describe("conversation review with conflict handling", () => {
       url: "/v1/review/conversation",
       payload: {
         project_id: "project:agent-memory",
-        text: "User: We decided to use PostgreSQL as storage."
+        text: "User: We decided to use Rust for the demo formatter implementation."
       }
     });
 
@@ -167,7 +167,7 @@ describe("conversation review with conflict handling", () => {
       url: `/v1/conflicts/${conflict.id}/resolve`,
       payload: {
         action: "keep_existing",
-        note: "The user clarified that PostgreSQL was only an example."
+        note: "The user clarified that Rust was only an example."
       }
     });
 
@@ -178,10 +178,10 @@ describe("conversation review with conflict handling", () => {
       method: "POST",
       url: "/v1/recall",
       payload: {
-        query: "SQLite storage",
+        query: "Python formatter implementation",
         scope: { kind: "project", project_id: "project:agent-memory" }
       }
     });
-    expect(recall.json().results[0].content).toBe("The MVP will use SQLite as storage.");
+    expect(recall.json().results[0].content).toBe("The demo formatter will use Python for implementation.");
   });
 });

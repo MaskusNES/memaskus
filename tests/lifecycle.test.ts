@@ -116,7 +116,7 @@ describe("memory lifecycle and control center", () => {
       payload: {
         conversation_id: "conv:forget-lineage",
         project_id: "project:forget-lineage",
-        text: `User: I prefer concise explanations tagged ${canary}.`
+        text: `User: I prefer alphabetically sorted catalog entries tagged ${canary}.`
       }
     });
     const candidateId = ingested.json().candidates[0].id as string;

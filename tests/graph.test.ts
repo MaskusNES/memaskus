@@ -71,8 +71,8 @@ describe("graph API and view", () => {
         project_id: "project:agent-memory",
         analysis_mode: "heuristic",
         text: [
-          "User: Remember that graph memory should show related knowledge.",
-          "User: We decided that graph memory visualization should connect related knowledge nodes."
+          "User: Remember that the sample catalog should show related books.",
+          "User: We decided that the sample catalog should connect related book entries."
         ].join("\n")
       }
     });
@@ -103,7 +103,7 @@ describe("graph API and view", () => {
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content: "Пользователь предпочитает переиспользуемые Codex skills для повторяющихся workflow.",
+        content: "Demo user prefers ISO date formatting across all projects.",
         scope: { kind: "project", project_id: "project:agent-memory" },
         metadata: {
           knowledge_scope: "global"
@@ -116,7 +116,7 @@ describe("graph API and view", () => {
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content: "Пользователь предпочитает, чтобы memory review использовал Codex skills в проекте памяти.",
+        content: "Demo project uses ISO date formatting in generated archives.",
         scope: { kind: "project", project_id: "project:agent-memory" },
         metadata: {
           knowledge_scope: "project_local"

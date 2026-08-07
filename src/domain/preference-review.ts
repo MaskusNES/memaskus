@@ -127,55 +127,14 @@ function isDisagreement(text: string): boolean {
 }
 
 function inferSignal(userText: string, assistantContext?: string): DisagreementSignal {
-  const normalized = userText.toLowerCase();
-  const preferences = new Set<string>();
-  const values = new Set<string>();
-  const reasons: string[] = [];
-
-  if (/mcp|tool|namespace|недоступ|не виж|не появ|подхват|доступ/iu.test(userText)) {
-    preferences.add("Пользователь предпочитает считать интеграции рабочими только после проверки, что они реально доступны в активной сессии агента.");
-    values.add("операционная достоверность важнее заявленной конфигурации");
-    reasons.push("реакция связана с расхождением между заявленной конфигурацией и инструментами, реально видимыми агенту");
-  }
-
-  if (/не так|не то|wrong|incorrect|not what|видимо|actually/iu.test(normalized)) {
-    preferences.add("Пользователь хочет, чтобы агент четко различал чтение существующей памяти и запись новой памяти, извлеченной из диалога.");
-    values.add("точная семантика операций");
-    reasons.push("пользователь поправил интерпретацию запрошенной операции с памятью");
-  }
-
-  if (/почему|why/iu.test(normalized)) {
-    preferences.add("Пользователь ожидает, что агент явно объясняет причины сбоев, а не только предлагает следующие шаги.");
-    values.add("прозрачная диагностика");
-    reasons.push("пользователь явно спросил, почему предложенный путь не сработал");
-  }
-
-  if (/confirm|confirmation|approval|подтвержд/iu.test(normalized) && /write|durable|memory|памят|запис/iu.test(normalized)) {
-    preferences.add("Пользователь предпочитает явное подтверждение перед долговременной записью в память.");
-    values.add("контроль пользователя над постоянным состоянием");
-    reasons.push("пользователь попросил подтверждение перед долговременной записью");
-  }
-
-  if (/стоп|stop|не, стоп/iu.test(normalized) && userText.length > 20) {
-    preferences.add("Пользователь хочет, чтобы агент останавливался и пересматривал допущения, когда наблюдаемое поведение противоречит плану.");
-    values.add("готовность реагировать на исправления");
-    reasons.push("пользователь остановил агента, потому что предыдущее объяснение не совпадало с наблюдаемым состоянием");
-  }
-
-  const reason_is_clear = preferences.size > 0 && values.size > 0;
-  const id = newId("disagree");
-
   return {
-    id,
+    id: newId("disagree"),
     user_text: userText,
     assistant_context: assistantContext,
-    reason_is_clear,
-    inferred_reason: reason_is_clear ? reasons.join("; ") : undefined,
-    demonstrated_preferences: [...preferences].map((preference) => ({ content: preference })),
-    demonstrated_values: [...values],
-    clarification_question: reason_is_clear
-      ? undefined
-      : `Ты возразил на этот ответ агента: "${assistantContext ?? "(нет контекста ответа агента)"}". Что именно было не так или какое предпочтение стоит запомнить из твоей реакции: "${userText}"?`
+    reason_is_clear: false,
+    demonstrated_preferences: [],
+    demonstrated_values: [],
+    clarification_question: `The dialogue contains a disagreement after this assistant response: "${assistantContext ?? "(no assistant context)"}". What preference or value, if any, should be retained from the user response: "${userText}"?`
   };
 }
 
@@ -320,8 +279,7 @@ function inferPreferenceKnowledgeScope(signal: DisagreementSignal, preference: D
     return "project_local";
   }
 
-  const globalHints =
-    /all projects|any project|across projects|global|subscription|active chat agent|codex skill|workflow|presentation|slide|format|formatting|все проекты|любого проекта|глобальн|подписк|активн.*чат|codex skill|скилл|workflow|презентац|слайд|формат/iu;
+  const globalHints = /all projects|any project|across projects|global|все проекты|любого проекта|глобальн/iu;
   if (globalHints.test(text)) {
     return "global";
   }

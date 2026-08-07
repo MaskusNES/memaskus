@@ -84,8 +84,8 @@ Request:
 
 ```json
 {
-  "type": "Preference",
-  "content": "The user prefers concise Russian-language answers.",
+  "type": "Decision",
+  "content": "Release artifacts use reproducible checksums.",
   "scope": {
     "kind": "global",
     "user_id": "user:default"
@@ -183,7 +183,7 @@ Response:
 ```json
 {
   "memory_id": "mem_01J...",
-  "content": "The user wants graph-based memory for AI agents.",
+  "content": "Release artifacts use reproducible checksums.",
   "why_stored": "Extracted as a durable project requirement from an explicit user statement.",
   "sources": [
     {

@@ -396,7 +396,7 @@ Request:
 {
   "conversation_id": "conv:2026-06-27",
   "project_id": "project:agent-memory",
-  "text": "User: I want graph-based memory for AI agents..."
+  "text": "User: Monthly reports should be exported as PDF..."
 }
 ```
 

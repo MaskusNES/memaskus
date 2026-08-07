@@ -34,8 +34,8 @@ describe("mutable user profile API", () => {
       url: "/v1/profile/slots",
       payload: {
         topic: "github",
-        sub_topic: "repository_visibility",
-        content: "Repositories should be private by default.",
+        sub_topic: "issue_title_format",
+        content: "Issue titles should begin with a component name.",
         confidence: 0.9,
         knowledge_scope: "global"
       }
@@ -49,8 +49,8 @@ describe("mutable user profile API", () => {
       url: "/v1/profile/slots",
       payload: {
         topic: "github",
-        sub_topic: "repository_visibility",
-        content: "Repositories must stay private unless the user explicitly asks for public visibility.",
+        sub_topic: "issue_title_format",
+        content: "Issue titles must begin with a bracketed component name.",
         confidence: 0.98,
         knowledge_scope: "global",
         reason: "explicit user correction"
@@ -68,7 +68,7 @@ describe("mutable user profile API", () => {
     expect(profile.json().slots).toHaveLength(1);
     expect(profile.json().slots[0]).toMatchObject({
       id: slotId,
-      content: "Repositories must stay private unless the user explicitly asks for public visibility.",
+      content: "Issue titles must begin with a bracketed component name.",
       confidence: 0.98
     });
 
@@ -85,8 +85,8 @@ describe("mutable user profile API", () => {
       url: "/v1/profile/slots",
       payload: {
         topic: "github",
-        sub_topic: "repository_visibility",
-        content: "Repositories are private by default.",
+        sub_topic: "issue_title_format",
+        content: "Issue titles begin with a component name.",
         confidence: 0.98,
         knowledge_scope: "global"
       }
@@ -128,7 +128,7 @@ describe("mutable user profile API", () => {
     });
 
     expect(context.statusCode).toBe(200);
-    expect(context.json().context).toContain("Repositories are private by default.");
+    expect(context.json().context).toContain("Issue titles begin with a component name.");
     expect(context.json().context).toContain("graph memory as evidence");
     expect(context.json().context).not.toContain("another project context");
   });
@@ -141,25 +141,25 @@ describe("mutable user profile API", () => {
         conversation_id: "conv:profile-projection",
         project_id: "project:agent-memory",
         text: [
-          "Assistant: I can make the repository public.",
-          "User: No, repositories should always be private unless I explicitly ask for public."
+          "Assistant: I will use unstructured issue titles.",
+          "User: No, issue titles should begin with a bracketed component name."
         ].join("\n"),
         analysis_mode: "agent_supplied",
         agent_analysis: {
           disagreements: [
             {
-              user_text: "No, repositories should always be private unless I explicitly ask for public.",
-              assistant_context: "I can make the repository public.",
+              user_text: "No, issue titles should begin with a bracketed component name.",
+              assistant_context: "I will use unstructured issue titles.",
               reason_is_clear: true,
-              inferred_reason: "The user corrected repository visibility defaults.",
+              inferred_reason: "The user corrected the issue-title convention.",
               demonstrated_preferences: [
                 {
-                  content: "GitHub repositories should be private by default; public visibility requires an explicit user request.",
+                  content: "GitHub issue titles should begin with a bracketed component name.",
                   confidence: 0.98,
                   knowledge_scope: "global",
                   metadata: {
                     domain: "github",
-                    policy: "repository_visibility"
+                    policy: "issue_title_format"
                   }
                 }
               ],
@@ -183,8 +183,8 @@ describe("mutable user profile API", () => {
     expect(profile.json().slots).toHaveLength(1);
     expect(profile.json().slots[0]).toMatchObject({
       topic: "github",
-      sub_topic: "repository_visibility",
-      content: "GitHub repositories should be private by default; public visibility requires an explicit user request."
+      sub_topic: "issue_title_format",
+      content: "GitHub issue titles should begin with a bracketed component name."
     });
   });
 
@@ -195,14 +195,14 @@ describe("mutable user profile API", () => {
       payload: {
         conversation_id: "conv:direct-profile-update",
         project_id: "project:agent-memory",
-        text: "User: Keep repositories private by default.",
+        text: "User: Prefix issue titles with the component name.",
         analysis_mode: "agent_supplied",
         agent_analysis: {
           profile_updates: [
             {
               topic: "github",
-              sub_topic: "repository_visibility",
-              content: "Keep GitHub repositories private by default.",
+              sub_topic: "issue_title_format",
+              content: "Prefix GitHub issue titles with the component name.",
               confidence: 0.97,
               knowledge_scope: "global",
               reason: "explicit user instruction"
@@ -216,8 +216,8 @@ describe("mutable user profile API", () => {
     expect(review.json().summary.profile_updates).toBe(1);
     expect(review.json().profile_updates[0]).toMatchObject({
       topic: "github",
-      sub_topic: "repository_visibility",
-      content: "Keep GitHub repositories private by default."
+      sub_topic: "issue_title_format",
+      content: "Prefix GitHub issue titles with the component name."
     });
 
     const context = await app.inject({
@@ -228,7 +228,7 @@ describe("mutable user profile API", () => {
       }
     });
 
-    expect(context.json().context).toContain("Keep GitHub repositories private by default.");
+    expect(context.json().context).toContain("Prefix GitHub issue titles with the component name.");
   });
 
   it("migrates existing active preference nodes into profile slots idempotently", async () => {
@@ -237,13 +237,13 @@ describe("mutable user profile API", () => {
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content: "GitHub repositories should stay private unless the user explicitly asks for public visibility.",
+        content: "GitHub issue titles should begin with a bracketed component name.",
         scope: { kind: "global" },
         confidence: 0.98,
         metadata: {
           knowledge_scope: "global",
           domain: "github",
-          policy: "repository_visibility"
+          policy: "issue_title_format"
         },
         source: {
           kind: "manual",
@@ -290,7 +290,7 @@ describe("mutable user profile API", () => {
       method: "POST",
       url: "/v1/ingest/conversation",
       payload: {
-        text: "User: I prefer concise technical explanations."
+        text: "User: I prefer catalog entries sorted alphabetically."
       }
     });
     const candidateId = ingested.json().candidates[0].id as string;
@@ -304,16 +304,16 @@ describe("mutable user profile API", () => {
     let slot = db
       .prepare("SELECT id, content, status FROM profile_slots WHERE json_extract(metadata_json, '$.source_memory_id') = ?")
       .get(memoryId) as { id: string; content: string; status: string };
-    expect(slot.content).toBe("I prefer concise technical explanations.");
+    expect(slot.content).toBe("I prefer catalog entries sorted alphabetically.");
 
     const updated = await app.inject({
       method: "PATCH",
       url: `/v1/memories/${memoryId}`,
-      payload: { content: "I prefer short, direct technical explanations.", reason: "explicit correction" }
+      payload: { content: "I prefer catalog entries sorted by publication year.", reason: "explicit correction" }
     });
     expect(updated.statusCode).toBe(200);
     slot = db.prepare("SELECT id, content, status FROM profile_slots WHERE id = ?").get(slot.id) as typeof slot;
-    expect(slot.content).toBe("I prefer short, direct technical explanations.");
+    expect(slot.content).toBe("I prefer catalog entries sorted by publication year.");
 
     const archived = await app.inject({
       method: "POST",

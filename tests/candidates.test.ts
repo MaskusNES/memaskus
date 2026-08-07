@@ -23,7 +23,7 @@ describe("candidate ingestion API", () => {
       payload: {
         conversation_id: "conv:test",
         project_id: "project:agent-memory",
-        text: "User: Remember that this memory system must be graph-based.\nUser: We decided to use SQLite for the first MVP."
+        text: "User: Remember that the sample catalog supports tags.\nUser: We decided to use JSON fixtures for the first demo."
       }
     });
 
@@ -43,7 +43,7 @@ describe("candidate ingestion API", () => {
       method: "POST",
       url: "/v1/recall",
       payload: {
-        query: "graph memory system",
+        query: "sample catalog tags",
         scope: { kind: "project", project_id: "project:agent-memory" },
         include_sources: true
       }
@@ -59,7 +59,7 @@ describe("candidate ingestion API", () => {
       url: "/v1/ingest/conversation",
       payload: {
         project_id: "project:agent-memory",
-        text: "User: We should add a graph visualization later."
+        text: "User: We should add a timeline view later."
       }
     });
 
@@ -76,7 +76,7 @@ describe("candidate ingestion API", () => {
       method: "POST",
       url: "/v1/recall",
       payload: {
-        query: "graph visualization",
+        query: "timeline view",
         scope: { kind: "project", project_id: "project:agent-memory" }
       }
     });

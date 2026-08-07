@@ -63,7 +63,7 @@ describe("memory API", () => {
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content: "Пользователь хочет глобальный bootstrap памяти перед задачами.",
+        content: "Demo user prefers ISO dates across all projects.",
         scope: { kind: "global" },
         metadata: { knowledge_scope: "global" }
       }
@@ -74,7 +74,7 @@ describe("memory API", () => {
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content: "Пользователь хочет локальный bootstrap памяти внутри проекта.",
+        content: "Demo project uses localized dates in printed labels.",
         scope: { kind: "project", project_id: "project:agent-memory" },
         metadata: { knowledge_scope: "project_local" }
       }
@@ -84,7 +84,7 @@ describe("memory API", () => {
       method: "POST",
       url: "/v1/recall",
       payload: {
-        query: "bootstrap памяти",
+        query: "dates projects",
         scope: { kind: "global" },
         knowledge_scope: "global",
         types: ["Preference"]
@@ -93,8 +93,8 @@ describe("memory API", () => {
 
     expect(recallResponse.statusCode).toBe(200);
     const contents = recallResponse.json().results.map((result: { content: string }) => result.content);
-    expect(contents).toContain("Пользователь хочет глобальный bootstrap памяти перед задачами.");
-    expect(contents).not.toContain("Пользователь хочет локальный bootstrap памяти внутри проекта.");
+    expect(contents).toContain("Demo user prefers ISO dates across all projects.");
+    expect(contents).not.toContain("Demo project uses localized dates in printed labels.");
   });
 
   it("infers global knowledge scope from global memory scope", async () => {
@@ -103,7 +103,7 @@ describe("memory API", () => {
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content: "User prefers reusable workflows across projects.",
+        content: "Demo user prefers UTC timestamps across projects.",
         scope: { kind: "global" }
       }
     });
@@ -112,7 +112,7 @@ describe("memory API", () => {
       method: "POST",
       url: "/v1/recall",
       payload: {
-        query: "reusable workflows",
+        query: "UTC timestamps",
         scope: { kind: "global" },
         knowledge_scope: "global",
         types: ["Preference"]
@@ -120,7 +120,7 @@ describe("memory API", () => {
     });
 
     expect(recallResponse.statusCode).toBe(200);
-    expect(recallResponse.json().results[0].content).toContain("reusable workflows");
+    expect(recallResponse.json().results[0].content).toContain("UTC timestamps");
   });
 
   it("does not recall memories without query overlap", async () => {
@@ -129,7 +129,7 @@ describe("memory API", () => {
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content: "User prefers concise implementation summaries.",
+        content: "Demo user prefers alphabetical catalog sorting.",
         scope: { kind: "global" },
         confidence: 0.99
       }

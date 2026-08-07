@@ -88,8 +88,8 @@ describe("scope, privacy, and review hardening", () => {
         analysis_mode: "heuristic",
         project_id: "project:agent-memory",
         text: [
-          "Assistant: We decided to replace the database immediately.",
-          "User: We should evaluate the migration tomorrow."
+          "Assistant: We decided to publish the draft immediately.",
+          "User: We should evaluate the draft tomorrow."
         ].join("\n")
       }
     });
@@ -292,7 +292,7 @@ describe("scope, privacy, and review hardening", () => {
       url: "/v1/memories",
       payload: {
         type: "Preference",
-        content: "Always keep explanations concise.",
+        content: "Always sort sample catalog entries alphabetically.",
         scope: { kind: "project", project_id: "project:origin" },
         metadata: { knowledge_scope: "global" }
       }
@@ -302,7 +302,7 @@ describe("scope, privacy, and review hardening", () => {
       method: "POST",
       url: "/v1/recall",
       payload: {
-        query: "concise explanations",
+        query: "catalog entries alphabetically",
         scope: { kind: "global" },
         knowledge_scope: "global"
       }
