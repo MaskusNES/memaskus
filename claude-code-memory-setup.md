@@ -39,6 +39,33 @@ claude mcp get agent_memory
 
 Inside Claude Code, `/mcp` should show `agent_memory`.
 
+## Shipped Claude integration
+
+This repository already includes two project-level components:
+
+- [`CLAUDE.md`](CLAUDE.md) — bootstrap, knowledge-layer, write, conflict and
+  security policy loaded for work in this repository;
+- [`.claude/agents/agent-memory-reviewer.md`](.claude/agents/agent-memory-reviewer.md)
+  — a specialized dialogue-review subagent using the shared MCP store.
+
+To make the reviewer available in every Claude Code project:
+
+```bash
+mkdir -p ~/.claude/agents
+cp .claude/agents/agent-memory-reviewer.md ~/.claude/agents/
+```
+
+PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\agents" | Out-Null
+Copy-Item -Force .\.claude\agents\agent-memory-reviewer.md "$env:USERPROFILE\.claude\agents\"
+```
+
+For another repository, copy and adapt `CLAUDE.md`, especially its stable
+project id. Neither file stores durable knowledge; both orchestrate access to the
+MCP-backed graph.
+
 ## Remote service over SSH
 
 For a service bound to the VPS loopback interface:

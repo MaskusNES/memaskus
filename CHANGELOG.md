@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Distributable Codex skills for global memory bootstrap and safe dialogue review.
+- README documentation for `AGENTS.md`, `CLAUDE.md` and the Claude Code reviewer subagent.
+
 ## [0.1.0] - 2026-08-07
 
 ### Added

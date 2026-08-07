@@ -179,6 +179,81 @@ env:
 а отдельный пример для Claude Code — в
 [claude-code-memory-setup.md](claude-code-memory-setup.md).
 
+## Навыки и инструкции агентов
+
+MCP предоставляет операции, но сам по себе не объясняет агенту, **когда** читать
+память, **что** считать долговременным знанием и **как** разбирать конфликты. Это
+делает отдельный orchestration layer из skills, project instructions и Claude
+subagent.
+
+| Компонент | Среда | Роль |
+| --- | --- | --- |
+| [`AGENTS.md`](AGENTS.md) | Codex | Задаёт project id, порядок bootstrap, правила записи, scope и безопасности. |
+| [`skills/global-memory-bootstrap`](skills/global-memory-bootstrap/SKILL.md) | Codex skill | Загружает глобальные предпочтения и operating rules перед началом задачи. |
+| [`skills/agent-memory-reviewer`](skills/agent-memory-reviewer/SKILL.md) | Codex skill | Семантически разбирает диалог и безопасно записывает durable knowledge через MCP. |
+| [`CLAUDE.md`](CLAUDE.md) | Claude Code | Задаёт тот же контракт bootstrap/read/write для Claude. |
+| [`.claude/agents/agent-memory-reviewer.md`](.claude/agents/agent-memory-reviewer.md) | Claude Code subagent | Выполняет специализированное ревью диалога и conflict classification. |
+| [`mcp-setup.md`](mcp-setup.md) | Любой MCP-клиент | Подключает tools к одному HTTP/SQLite service. |
+
+### Что изменяют `AGENTS.md` и `CLAUDE.md`
+
+Оба файла превращают обычный MCP-сервер в предсказуемый memory workflow:
+
+1. Перед проектной работой агент читает глобальный слой через `memory_recall`.
+2. Затем отдельно загружает `project_local` context для текущего `project_id`.
+3. Mutable preferences читаются через `memory_get_profile`/`memory_context`.
+4. Явная безопасная просьба «запомни» может использовать `memory_remember`.
+5. Знания, извлечённые из диалога, проходят через reviewer и
+   `memory_review_conversation` с `analysis_mode: "agent_supplied"`.
+6. Связанные, но совместимые записи помечаются `mark_compatible`.
+7. Настоящие противоречия показываются пользователю; `accept_new` или
+   `keep_existing` применяется только после его выбора.
+8. Credentials и private keys никогда не сохраняются.
+
+`AGENTS.md`, `CLAUDE.md` и skills — это **инструкции процесса**, а не база
+знаний. Источником долговременной памяти остаётся MCP-backed graph store.
+
+### Установка Codex skills
+
+После настройки MCP скопируйте skills в персональный каталог Codex.
+
+Linux/macOS:
+
+```bash
+mkdir -p ~/.codex/skills
+cp -R skills/global-memory-bootstrap ~/.codex/skills/
+cp -R skills/agent-memory-reviewer ~/.codex/skills/
+```
+
+PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills" | Out-Null
+Copy-Item -Recurse -Force .\skills\global-memory-bootstrap "$env:USERPROFILE\.codex\skills\"
+Copy-Item -Recurse -Force .\skills\agent-memory-reviewer "$env:USERPROFILE\.codex\skills\"
+```
+
+После первой установки перезапустите Codex. Подробности и назначение навыков:
+[`skills/README.md`](skills/README.md).
+
+### Claude Code
+
+В этом репозитории Claude Code автоматически получает [`CLAUDE.md`](CLAUDE.md)
+и project-level subagent
+[`.claude/agents/agent-memory-reviewer.md`](.claude/agents/agent-memory-reviewer.md).
+Для использования subagent во всех проектах его можно скопировать в
+`~/.claude/agents/`. Полная инструкция находится в
+[`claude-code-memory-setup.md`](claude-code-memory-setup.md).
+
+### Подключение другого репозитория
+
+1. Настройте его MCP-клиент на тот же `agent_memory` service.
+2. Скопируйте `AGENTS.md` или `CLAUDE.md` в корень проекта.
+3. Замените `project:agent-memory` на стабильный уникальный project id.
+4. Установите skills или Claude subagent.
+5. Не смешивайте `global` и `project_local` layers и не храните знания в самих
+   instruction files.
+
 ## HTTP API
 
 | Метод | Endpoint | Назначение |
@@ -301,6 +376,8 @@ src/domain/   graph, recall, privacy, profile and lifecycle logic
 src/routes/   Fastify HTTP routes
 src/mcp/      MCP stdio adapter over HTTP
 src/cli/      operational and maintenance commands
+skills/       installable Codex orchestration skills
+.claude/      project-level Claude Code subagents
 public/       built-in Memory, Profile and Graph UI
 deploy/       systemd installation and restore scripts
 tests/        integration, security and retrieval tests
