@@ -223,7 +223,7 @@ describe("scope, privacy, and review hardening", () => {
 
     const ready = await app.inject({ method: "GET", url: "/ready" });
     expect(ready.statusCode).toBe(200);
-    expect(ready.json()).toEqual({ ok: true, schema_version: 4 });
+    expect(ready.json()).toEqual({ ok: true, schema_version: 5 });
   });
 
   it("rejects candidate merges across type, exact scope, or knowledge layer", async () => {
@@ -339,7 +339,7 @@ describe("database migrations", () => {
     legacy.close();
 
     const migrated = openDatabase(databasePath);
-    expect(migrated.pragma("user_version", { simple: true })).toBe(4);
+    expect(migrated.pragma("user_version", { simple: true })).toBe(5);
     expect((migrated.prepare("SELECT content FROM nodes WHERE id = 'node_legacy'").get() as { content: string }).content).toBe(
       "Legacy content"
     );
@@ -351,6 +351,9 @@ describe("database migrations", () => {
       (migrated.prepare("SELECT COUNT(*) AS count FROM nodes_fts WHERE id = 'node_legacy'").get() as { count: number })
         .count
     ).toBe(1);
+    expect(
+      migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_embeddings'").get()
+    ).toBeTruthy();
     migrated.close();
     fs.rmSync(directory, { recursive: true, force: true });
   });
@@ -362,7 +365,7 @@ describe("database migrations", () => {
     future.pragma("user_version = 999");
     future.close();
 
-    expect(() => openDatabase(databasePath)).toThrow(/newer than supported version 4/);
+    expect(() => openDatabase(databasePath)).toThrow(/newer than supported version 5/);
     fs.rmSync(directory, { recursive: true, force: true });
   });
 });

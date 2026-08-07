@@ -177,6 +177,7 @@ export function updateMemory(db: MemoryDb, id: string, input: UpdateMemoryInput)
       now,
       id
     );
+    db.prepare("DELETE FROM memory_embeddings WHERE memory_id = ?").run(id);
     synchronizeProfileForMemory(db, getMemory(db, id), input.reason ?? "memory corrected");
   });
   transaction();
@@ -191,6 +192,7 @@ export function archiveMemory(db: MemoryDb, id: string, reason = "memory archive
   const transaction = db.transaction(() => {
     insertRevision(db, existing, existing, reason);
     db.prepare("UPDATE nodes SET status = 'archived', updated_at = ? WHERE id = ?").run(nowIso(), id);
+    db.prepare("DELETE FROM memory_embeddings WHERE memory_id = ?").run(id);
     archiveProfileForMemory(db, id, reason);
   });
   transaction();
@@ -294,6 +296,7 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
       "UPDATE memory_revisions SET previous_content = ?, next_content = ?, reason = ? WHERE memory_id = ?"
     ).run(tombstone, tombstone, tombstone, id);
     db.prepare("UPDATE memory_feedback SET comment = NULL, action = NULL WHERE memory_id = ?").run(id);
+    db.prepare("DELETE FROM memory_embeddings WHERE memory_id = ?").run(id);
   });
   transaction();
   return getMemory(db, id);

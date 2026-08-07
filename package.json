@@ -15,6 +15,7 @@
     "memory:recalibrate-confidence": "tsx src/cli/recalibrate-confidence.ts",
     "memory:separate-scopes": "tsx src/cli/separate-knowledge-scopes.ts",
     "memory:migrate-profile": "tsx src/cli/migrate-preferences-to-profile.ts",
+    "memory:eval": "tsx src/cli/evaluate-retrieval.ts",
     "mcp": "tsx src/mcp/server.ts",
     "mcp:start": "node dist/mcp/server.js"
   },

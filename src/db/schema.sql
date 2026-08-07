@@ -163,6 +163,18 @@ CREATE TABLE IF NOT EXISTS memory_feedback (
   FOREIGN KEY (memory_id) REFERENCES nodes(id)
 );
 
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+  memory_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  vector_blob BLOB NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (memory_id, provider, model),
+  FOREIGN KEY (memory_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -185,3 +197,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_profile_slots_active_identity
   WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_memory_revisions_memory ON memory_revisions(memory_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_feedback_memory ON memory_feedback(memory_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_provider ON memory_embeddings(provider, model, memory_id);

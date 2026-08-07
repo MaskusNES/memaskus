@@ -2,6 +2,7 @@ import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { ZodError } from "zod";
 import type { MemoryDb } from "./db/connection.js";
+import type { EmbeddingProvider } from "./domain/embeddings.js";
 import { NotFoundError, ValidationError } from "./shared/errors.js";
 import { registerCandidateRoutes } from "./routes/candidates.js";
 import { registerGraphRoutes } from "./routes/graph.js";
@@ -41,7 +42,11 @@ function requestApiKey(headers: Record<string, string | string[] | undefined>): 
   return authorizationValue?.startsWith("Bearer ") ? authorizationValue.slice("Bearer ".length) : undefined;
 }
 
-export async function buildServer(db: MemoryDb) {
+export type ServerOptions = {
+  embeddingProvider?: EmbeddingProvider;
+};
+
+export async function buildServer(db: MemoryDb, options: ServerOptions = {}) {
   const app = Fastify({ logger: true });
   const apiKey = process.env.MEMORY_API_KEY;
 
@@ -120,7 +125,7 @@ export async function buildServer(db: MemoryDb) {
 
   await registerMemoryRoutes(app, db);
   await registerProfileRoutes(app, db);
-  await registerRecallRoutes(app, db);
+  await registerRecallRoutes(app, db, options.embeddingProvider);
   await registerLinkRoutes(app, db);
   await registerIngestRoutes(app, db);
   await registerCandidateRoutes(app, db);

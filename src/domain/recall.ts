@@ -1,9 +1,11 @@
 import type { MemoryDb } from "../db/connection.js";
+import type { EmbeddingProvider } from "./embeddings.js";
 import { knowledgeScope } from "./links.js";
 import { mapEdge, mapNode } from "./mappers.js";
 import { redactedContent, redactSourcesForMemory } from "./privacy.js";
 import { memoryVisibilitySqlParts, scopeVisibleFrom } from "./scope.js";
 import { indexedNodeSearch, tokenOverlap } from "./search.js";
+import { semanticNodeSearch } from "./semantic-search.js";
 import { listSourcesForNode } from "./sources.js";
 import type { Edge, KnowledgeScope, MemoryNode, Scope, Source } from "./types.js";
 
@@ -28,13 +30,22 @@ export type RecallResult = {
   confidence: number;
   score: number;
   retrieval: {
-    strategy: "fts5_graph" | "token_graph";
+    strategy: "semantic_fts5_graph" | "semantic_token_graph" | "fts5_graph" | "token_graph";
     lexical_score: number;
+    semantic_score: number;
+    semantic_status: "disabled" | "used" | "degraded";
     graph_score: number;
     graph_distance: number | null;
     feedback_score: number;
   };
   sources?: Source[];
+};
+
+export type RecallOptions = {
+  embeddingProvider?: EmbeddingProvider;
+  semanticMaxScan?: number;
+  semanticMinScore?: number;
+  onSemanticError?: (error: unknown) => void;
 };
 
 function recencyBoost(memory: MemoryNode): number {
@@ -176,7 +187,7 @@ function lexicalSeeds(
   db: MemoryDb,
   input: RecallInput
 ): {
-  strategy: RecallResult["retrieval"]["strategy"];
+  strategy: "fts5_graph" | "token_graph";
   memories: MemoryNode[];
   strengths: Map<string, number>;
 } {
@@ -216,30 +227,81 @@ function lexicalSeeds(
   };
 }
 
-export function recall(db: MemoryDb, input: RecallInput): RecallResult[] {
-  const seeds = lexicalSeeds(db, input);
-  if (seeds.strengths.size === 0) {
+export async function recall(
+  db: MemoryDb,
+  input: RecallInput,
+  options: RecallOptions = {}
+): Promise<RecallResult[]> {
+  const lexical = lexicalSeeds(db, input);
+  const semanticScores = new Map<string, number>();
+  let semanticStatus: RecallResult["retrieval"]["semantic_status"] = "disabled";
+  if (options.embeddingProvider) {
+    try {
+      const semantic = await semanticNodeSearch(db, options.embeddingProvider, {
+        query: input.query,
+        scope: input.scope,
+        knowledge_scope: input.knowledge_scope,
+        limit: MAX_INDEXED_SEEDS,
+        maxScan: options.semanticMaxScan,
+        minScore: options.semanticMinScore
+      });
+      semantic.hits.forEach((hit) => semanticScores.set(hit.id, hit.score));
+      semanticStatus = "used";
+    } catch (error) {
+      semanticStatus = "degraded";
+      options.onSemanticError?.(error);
+    }
+  }
+
+  const seedIds = new Set([...lexical.strengths.keys(), ...semanticScores.keys()]);
+  if (seedIds.size === 0) {
     return [];
   }
 
-  const expanded = expandGraph(db, input, seeds.memories, seeds.strengths);
+  const seedMemories = loadVisibleMemoriesById(db, seedIds, input);
+  const graphSeedStrengths = new Map(
+    seedMemories.map((memory) => [
+      memory.id,
+      Math.max(lexical.strengths.get(memory.id) ?? 0, semanticScores.get(memory.id) ?? 0)
+    ])
+  );
+
+  const expanded = expandGraph(db, input, seedMemories, graphSeedStrengths);
   const requestedTypes = new Set(input.types ?? []);
   const feedback = feedbackSignals(db);
+  const strategy: RecallResult["retrieval"]["strategy"] =
+    semanticStatus === "used"
+      ? lexical.strategy === "fts5_graph"
+        ? "semantic_fts5_graph"
+        : "semantic_token_graph"
+      : lexical.strategy;
 
   return [...expanded.memories.values()]
     .filter((memory) => requestedTypes.size === 0 || requestedTypes.has(memory.type))
     .map((memory) => {
-      const lexical = seeds.strengths.get(memory.id) ?? 0;
+      const lexicalScore = lexical.strengths.get(memory.id) ?? 0;
+      const semanticScore = semanticScores.get(memory.id) ?? 0;
       const graphMatch = expanded.signals.get(memory.id);
       const feedbackScore = feedback.get(memory.id) ?? 0;
-      const score = Math.min(
-        1,
-        lexical * 0.57 +
-          memory.confidence * 0.14 +
-          recencyBoost(memory) * 0.04 +
-          (graphMatch?.strength ?? 0) * 0.2 +
-          feedbackScore * 0.05
-      );
+      const score =
+        semanticStatus === "used"
+          ? Math.min(
+              1,
+              lexicalScore * 0.31 +
+                semanticScore * 0.31 +
+                memory.confidence * 0.13 +
+                recencyBoost(memory) * 0.04 +
+                (graphMatch?.strength ?? 0) * 0.16 +
+                feedbackScore * 0.05
+            )
+          : Math.min(
+              1,
+              lexicalScore * 0.57 +
+                memory.confidence * 0.14 +
+                recencyBoost(memory) * 0.04 +
+                (graphMatch?.strength ?? 0) * 0.2 +
+                feedbackScore * 0.05
+            );
       return {
         id: memory.id,
         type: memory.type,
@@ -247,8 +309,10 @@ export function recall(db: MemoryDb, input: RecallInput): RecallResult[] {
         confidence: memory.confidence,
         score: Number(score.toFixed(4)),
         retrieval: {
-          strategy: seeds.strategy,
-          lexical_score: Number(lexical.toFixed(4)),
+          strategy,
+          lexical_score: Number(lexicalScore.toFixed(4)),
+          semantic_score: Number(semanticScore.toFixed(4)),
+          semantic_status: semanticStatus,
           graph_score: Number((graphMatch?.strength ?? 0).toFixed(4)),
           graph_distance: graphMatch?.distance ?? null,
           feedback_score: Number(feedbackScore.toFixed(4))
@@ -256,7 +320,12 @@ export function recall(db: MemoryDb, input: RecallInput): RecallResult[] {
         memory
       };
     })
-    .filter((result) => result.retrieval.lexical_score > 0 || result.retrieval.graph_score > 0)
+    .filter(
+      (result) =>
+        result.retrieval.lexical_score > 0 ||
+        result.retrieval.semantic_score > 0 ||
+        result.retrieval.graph_score > 0
+    )
     .sort((a, b) => b.score - a.score)
     .slice(0, input.limit ?? 10)
     .map(({ memory, ...result }) => ({

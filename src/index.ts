@@ -1,10 +1,12 @@
 import { loadConfig } from "./config.js";
 import { openDatabase } from "./db/connection.js";
+import { createEmbeddingProviderFromEnv } from "./domain/embeddings.js";
 import { buildServer } from "./server.js";
 
 const config = loadConfig();
 const db = openDatabase(config.databasePath);
-const app = await buildServer(db);
+const embeddingProvider = createEmbeddingProviderFromEnv();
+const app = await buildServer(db, { embeddingProvider });
 
 await app.listen({ host: config.host, port: config.port });
 

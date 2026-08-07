@@ -2,7 +2,7 @@ import fs from "node:fs";
 import type { MemoryDb } from "./connection.js";
 import { nowIso } from "../shared/time.js";
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 function tableColumns(db: MemoryDb, table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -136,6 +136,11 @@ export function runMigrations(db: MemoryDb, schemaUrl: URL): void {
     if (current < 4) {
       ensureNodeSearchIndex(db);
       recordMigration(db, 4, "optional FTS5 node search index");
+    }
+
+    if (current < 5) {
+      db.exec(schema);
+      recordMigration(db, 5, "provider-neutral memory embeddings");
     }
   });
 

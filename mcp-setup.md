@@ -21,6 +21,38 @@ VPS: /var/lib/agent-memory/memory.sqlite
 
 The HTTP service is bound to `127.0.0.1:39110` on the VPS. Do not expose it publicly.
 
+## Optional Semantic Recall
+
+Semantic embeddings are disabled by default. The service continues to use FTS5,
+graph traversal, confidence, recency, and feedback when no provider is configured.
+
+To enable the OpenAI provider, put these values in `/etc/agent-memory.env` and keep
+that file readable only by the service account:
+
+```dotenv
+MEMORY_EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=<set-in-the-server-secret-store>
+MEMORY_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+Optional controls are `MEMORY_EMBEDDING_DIMENSIONS`,
+`MEMORY_EMBEDDING_TIMEOUT_MS`, and `MEMORY_EMBEDDING_BASE_URL`. Normal memories
+are embedded lazily and cached in SQLite. Memories marked `sensitive` or `secret`
+are never sent to the embedding provider. Provider failures degrade to local
+indexed recall.
+
+## Retrieval Evaluation
+
+Run an evaluation dataset against a database with:
+
+```powershell
+npm run memory:eval -- --dataset .\evals\retrieval.json --db .\data\memory.sqlite --limit 10
+```
+
+The dataset is a JSON array. Each item contains `query`, `expected_ids`, and
+optional `scope`, `knowledge_scope`, and `types`. The command reports hit rate,
+recall, mean reciprocal rank, and nDCG at the selected cutoff.
+
 ## Codex MCP Config
 
 Use SSH as the MCP command:
