@@ -16,6 +16,44 @@ SQLite.
 > 1.0 возможны несовместимые изменения. Сервис рассчитан на одного доверенного
 > пользователя или небольшую доверенную среду, а не на публичный multi-tenant SaaS.
 
+## Quick setup guide
+
+1. **Установите prerequisites:** Node.js 22+, npm и Git.
+2. **Склонируйте и соберите сервис:**
+
+   ```bash
+   git clone https://github.com/MaskusNES/memaskus.git
+   cd memaskus
+   npm ci
+   npm run build
+   ```
+
+3. **Запустите HTTP API:**
+
+   ```bash
+   npm start
+   ```
+
+   Проверьте `http://127.0.0.1:3010/ready` и откройте
+   `http://127.0.0.1:3010/memory`. База и миграции создадутся автоматически.
+
+4. **Подключите MCP-клиент:** используйте команду `node`, абсолютный путь к
+   `dist/mcp/server.js` и переменную
+   `MEMORY_API_URL=http://127.0.0.1:3010`. Готовые локальные и SSH-примеры есть
+   в [`mcp-setup.md`](mcp-setup.md).
+5. **Установите agent workflow:** скопируйте папки из [`skills/`](skills) в
+   `~/.codex/skills/` для Codex. Claude Code автоматически использует
+   [`CLAUDE.md`](CLAUDE.md) и project-level reviewer из [`.claude/agents/`](.claude/agents).
+6. **Проверьте запись и recall:**
+
+   ```bash
+   npm run memory -- remember "Use SQLite for the first release" --type Decision --project project:demo
+   npm run memory -- recall "Which database should we use?" --project project:demo --sources
+   ```
+
+Для API key, embeddings, VPS и production-настроек перейдите к подробным
+разделам ниже.
+
 ![Архитектура Agent Memory](assets/agent-memory-business-architecture.png)
 
 ## Возможности
