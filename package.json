@@ -1,0 +1,40 @@
+{
+  "name": "agent-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "memory": "tsx src/cli/memory-cli.ts",
+    "memory:translate-ru": "tsx src/cli/translate-existing-memory-ru.ts",
+    "memory:link-existing": "tsx src/cli/link-existing-memory.ts",
+    "memory:recalibrate-confidence": "tsx src/cli/recalibrate-confidence.ts",
+    "memory:separate-scopes": "tsx src/cli/separate-knowledge-scopes.ts",
+    "memory:migrate-profile": "tsx src/cli/migrate-preferences-to-profile.ts",
+    "mcp": "tsx src/mcp/server.ts",
+    "mcp:start": "node dist/mcp/server.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^11.7.0",
+    "commander": "^12.1.0",
+    "fastify": "^5.10.0",
+    "nanoid": "^5.0.9",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.7"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.12"
+  }
+}

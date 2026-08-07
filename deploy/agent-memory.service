@@ -1,0 +1,27 @@
+[Unit]
+Description=Agent Memory HTTP Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent-memory
+Group=agent-memory
+WorkingDirectory=/opt/agent-memory/current
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=39110
+Environment=MEMORY_DB_PATH=/var/lib/agent-memory/memory.sqlite
+EnvironmentFile=-/etc/agent-memory.env
+ExecStart=/usr/bin/node /opt/agent-memory/current/dist/index.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/agent-memory
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

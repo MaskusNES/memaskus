@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Memory Graph</title>
+    <link rel="stylesheet" href="/graph/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h1>Agent Memory Graph</h1>
+            <p id="graphSummary">Loading memory graph...</p>
+          </div>
+        </div>
+        <form id="controls" class="controls">
+          <label>
+            Project
+            <input id="projectInput" name="project" value="project:agent-memory" autocomplete="off" />
+          </label>
+          <label>
+            Search
+            <input id="searchInput" name="search" placeholder="ID, text, type, relation" autocomplete="off" />
+          </label>
+          <button type="submit">Refresh</button>
+        </form>
+      </header>
+      <nav class="view-links" aria-label="Memory views">
+        <a href="/memory">Memory</a>
+        <a href="/profile">Profile</a>
+        <a href="/graph" aria-current="page">Graph</a>
+      </nav>
+
+      <section class="workspace" aria-label="Memory graph workspace">
+        <canvas id="graphCanvas" aria-label="Interactive memory graph"></canvas>
+        <aside class="inspector" aria-label="Selected memory">
+          <div class="inspector-empty" id="emptyState">
+            <h2>No node selected</h2>
+            <p>Select a node in the graph to inspect content, confidence, scope, and connected relations.</p>
+          </div>
+          <div class="inspector-content" id="inspector" hidden>
+            <div class="node-heading">
+              <div class="node-type" id="nodeType"></div>
+              <div class="entity-id" id="nodeDisplayId"></div>
+            </div>
+            <h2 id="nodeTitle"></h2>
+            <dl>
+              <div>
+                <dt>ID</dt>
+                <dd id="nodeFullId"></dd>
+              </div>
+              <div>
+                <dt>Confidence</dt>
+                <dd id="nodeConfidence"></dd>
+              </div>
+              <div>
+                <dt>Scope</dt>
+                <dd id="nodeScope"></dd>
+              </div>
+              <div>
+                <dt>Knowledge</dt>
+                <dd id="nodeKnowledgeScope"></dd>
+              </div>
+              <div>
+                <dt>Updated</dt>
+                <dd id="nodeUpdated"></dd>
+              </div>
+            </dl>
+            <h3>Relations</h3>
+            <ul id="relationList"></ul>
+          </div>
+        </aside>
+      </section>
+    </main>
+    <script src="/graph/app.js" type="module"></script>
+  </body>
+</html>
