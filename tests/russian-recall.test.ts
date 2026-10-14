@@ -110,8 +110,10 @@ describe.each([true, false])("Russian recall (FTS=%s)", (fts) => {
     const global = await create("задачами", scope, "global");
     const physicalGlobal = await create("задачами", { kind: "global" }, "global");
     const archived = await create("задача");
-    const deleted = await create("задача");
     expect((await app.inject({ method: "POST", url: `/v1/memories/${archived}/archive`, payload: {} })).statusCode).toBe(200);
+    // Archive first so POST creates a separate record instead of reusing an active duplicate.
+    const deleted = await create("задача");
+    expect(deleted).not.toBe(archived);
     expect((await app.inject({ method: "DELETE", url: `/v1/memories/${deleted}`, payload: {} })).statusCode).toBe(200);
     expect((await query("задача")).map(item => item.id)).toEqual([active]);
     // Omitting knowledge_scope retains the existing physical-scope behavior.
