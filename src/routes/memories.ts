@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { MemoryDb } from "../db/connection.js";
 import { explainMemory } from "../domain/explain.js";
-import { createRelatedLinksForMemory } from "../domain/links.js";
+import { createOrReuseMemory } from "../domain/remember.js";
 import {
   addMemoryFeedback,
   archiveMemory,
@@ -14,21 +14,10 @@ import {
   listMemoryRevisions,
   updateMemory
 } from "../domain/memory-lifecycle.js";
-import { createMemory } from "../domain/nodes.js";
-import { applyMemoryToProfile } from "../domain/profile.js";
 import { publicMemory, publicMemoryRevision } from "../domain/privacy.js";
 import type { Scope } from "../domain/types.js";
-import { sourceSchema, scopeSchema } from "./schemas.js";
+import { createMemorySchema, scopeSchema } from "./schemas.js";
 
-const createMemorySchema = z.object({
-  type: z.string().min(1),
-  content: z.string().min(1),
-  scope: scopeSchema,
-  confidence: z.number().min(0).max(1).optional(),
-  privacy_level: z.enum(["normal", "sensitive", "secret"]).optional(),
-  source: sourceSchema,
-  metadata: z.record(z.unknown()).optional()
-});
 
 const memoryStatusSchema = z.enum(["candidate", "active", "superseded", "archived", "deleted"]);
 const memoryQuerySchema = z.object({
@@ -113,13 +102,13 @@ export async function registerMemoryRoutes(app: FastifyInstance, db: MemoryDb): 
 
   app.post("/v1/memories", async (request, reply) => {
     const input = createMemorySchema.parse(request.body);
-    const memory = db.transaction(() => {
-      const created = createMemory(db, input);
-      createRelatedLinksForMemory(db, created);
-      applyMemoryToProfile(db, created);
-      return created;
-    })();
-    return reply.code(201).send({ id: memory.id, status: memory.status, memory: publicMemory(memory) });
+    const { memory, deduplicated } = createOrReuseMemory(db, input);
+    return reply.code(deduplicated ? 200 : 201).send({
+      id: memory.id,
+      status: memory.status,
+      memory: publicMemory(memory),
+      ...(deduplicated ? { deduplicated: true } : {})
+    });
   });
 
   app.get("/v1/memories/:id/explain", async (request) => {

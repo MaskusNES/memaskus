@@ -29,3 +29,13 @@ export const sourceSchema = z
     metadata: z.record(z.unknown()).optional()
   })
   .optional();
+
+export const createMemorySchema = z.object({
+  type: z.string().min(1),
+  content: z.string().min(1),
+  scope: scopeSchema,
+  confidence: z.number().min(0).max(1).optional(),
+  privacy_level: z.enum(["normal", "sensitive", "secret"]).optional(),
+  source: sourceSchema,
+  metadata: z.record(z.unknown()).optional()
+});
