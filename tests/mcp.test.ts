@@ -89,6 +89,14 @@ describe("MCP memory adapter", () => {
     expect(JSON.stringify(recall)).toContain("MCP adapter stores explicit memories");
   });
 
+  it("passes through the reused id and deduplicated flag", async () => {
+    const args = { type: "Fact", content: "MCP dedup synthetic marker", scope: { project_id: "project:qa" } };
+    const first = toolResult<{ id: string }>(await client.callTool({ name: "memory_remember", arguments: args }));
+    const next = toolResult<{ id: string; deduplicated: boolean }>(await client.callTool({ name: "memory_remember", arguments: args }));
+    expect(next.id).toBe(first.id);
+    expect(next.deduplicated).toBe(true);
+  });
+
   it("reviews conversation and resolves conflicts through MCP", async () => {
     await client.callTool({
       name: "memory_remember",

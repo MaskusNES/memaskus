@@ -21,7 +21,7 @@ function defaultKnowledgeScope(scope: Scope): "global" | "project_local" {
   return scope.kind === "global" ? "global" : "project_local";
 }
 
-function normalizeMetadata(metadata: Record<string, unknown> | undefined, scope: Scope): Record<string, unknown> {
+export function normalizeMemoryMetadata(metadata: Record<string, unknown> | undefined, scope: Scope): Record<string, unknown> {
   const normalized = sanitizeMetadata(metadata);
   if (normalized.knowledge_scope !== "global" && normalized.knowledge_scope !== "project_local") {
     normalized.knowledge_scope = defaultKnowledgeScope(scope);
@@ -33,7 +33,7 @@ export function createMemory(db: MemoryDb, input: CreateMemoryInput): MemoryNode
   assertSafeForStorage(input.content, "memory content");
   const now = nowIso();
   const scope = input.scope ?? { kind: "global" };
-  const metadata = normalizeMetadata(input.metadata, scope);
+  const metadata = normalizeMemoryMetadata(input.metadata, scope);
   const node: MemoryNode = {
     id: newId("node"),
     type: input.type,
