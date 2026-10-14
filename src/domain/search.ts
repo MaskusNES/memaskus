@@ -3,6 +3,35 @@ import { memoryVisibilitySqlParts } from "./scope.js";
 import type { KnowledgeScope, Scope } from "./types.js";
 
 const MAX_QUERY_TOKENS = 16;
+const MAX_RUSSIAN_VARIANTS = 8;
+const MIN_RUSSIAN_STEM_LENGTH = 3;
+
+function normalizeRussian(token: string): string {
+  return token.replace(/ё/g, "е");
+}
+
+// Deliberately limited noun endings, not a general morphological analyzer.
+// Longest endings go first; short words never acquire a broad stem prefix.
+function russianStem(token: string): string {
+  const normalized = normalizeRussian(token);
+  if (!/^[а-я]+$/u.test(normalized) || normalized.length < 4) return normalized;
+  const stem = normalized.replace(/(?:ами|ями|ах|ях|ам|ям|ой|ей|ою|ею|ом|ем|а|я|ы|и|у|ю|е|о)$/u, "");
+  return stem.length >= MIN_RUSSIAN_STEM_LENGTH ? stem : normalized;
+}
+
+function russianVariants(token: string): string[] {
+  if (!/^[а-яё]+$/u.test(token)) return [token];
+  // Keep the original even when the combinatorial е/ё expansion hits its cap.
+  const variants = new Set([token, normalizeRussian(token)]);
+  for (let index = 0; index < token.length && variants.size < MAX_RUSSIAN_VARIANTS; index += 1) {
+    if (token[index] !== "е" && token[index] !== "ё") continue;
+    for (const variant of [...variants]) {
+      variants.add(`${variant.slice(0, index)}ё${variant.slice(index + 1)}`);
+      if (variants.size >= MAX_RUSSIAN_VARIANTS) break;
+    }
+  }
+  return [...variants];
+}
 
 export type IndexedSearchHit = {
   id: string;
@@ -33,10 +62,13 @@ export function tokenOverlap(query: string, content: string): number {
   }
 
   const contentTokens = new Set(searchTokens(content));
+  const normalizedContent = new Set([...contentTokens].map(russianStem));
   let matches = 0;
   for (const token of queryTokens) {
     if (contentTokens.has(token)) {
       matches += 1;
+    } else if (normalizedContent.has(russianStem(token))) {
+      matches += 0.75;
     }
   }
   return matches / queryTokens.length;
@@ -55,7 +87,15 @@ function ftsQuery(query: string): string | null {
   }
   // Tokens are produced from letters and digits only, so quoting them removes
   // FTS operator semantics while the suffix enables useful prefix matching.
-  return tokens.map((token) => `"${token}"*`).join(" OR ");
+  const variants = new Set<string>();
+  for (const token of tokens) {
+    for (const variant of russianVariants(token)) variants.add(variant);
+    const stem = russianStem(token);
+    if (stem !== normalizeRussian(token)) {
+      for (const variant of russianVariants(stem)) variants.add(variant);
+    }
+  }
+  return [...variants].map((token) => `"${token}"*`).join(" OR ");
 }
 
 export function indexedNodeSearch(
