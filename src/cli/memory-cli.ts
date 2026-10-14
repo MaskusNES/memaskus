@@ -1,30 +1,15 @@
 import { Command } from "commander";
 import fs from "node:fs/promises";
+import { createMemoryHttpClient } from "../shared/http-client.js";
 
 const program = new Command();
-const baseUrl = process.env.MEMORY_API_URL ?? "http://127.0.0.1:3010";
-const apiKey = process.env.MEMORY_API_KEY;
+const client = createMemoryHttpClient();
 
 async function request(path: string, options: RequestInit = {}) {
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers: {
-      "content-type": "application/json",
-      ...(apiKey ? { "x-memory-api-key": apiKey } : {}),
-      ...options.headers
-    }
-  });
-
-  const text = await response.text();
-  const body = text ? JSON.parse(text) : null;
-  if (!response.ok) {
-    throw new Error(JSON.stringify(body, null, 2));
-  }
-
-  console.log(JSON.stringify(body, null, 2));
+  console.log(JSON.stringify(await client.request(path, options), null, 2));
 }
 
-program.name("memory").description("CLI for the local agent memory service");
+program.name("memory").description("CLI for the agent memory service");
 
 program
   .command("remember")

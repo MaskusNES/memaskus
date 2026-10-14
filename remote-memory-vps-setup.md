@@ -26,13 +26,9 @@ From the repository root:
 npm ci
 npm test
 npm run build
-tar -czf agent-memory-deploy.tgz \
-  --exclude=.git \
-  --exclude=node_modules \
-  --exclude=data \
-  --exclude=backups \
-  --exclude=.env \
-  .
+tar -czf /tmp/agent-memory-deploy.tgz \
+  package.json package-lock.json dist public deploy scripts \
+  README.md AGENTS.md CLAUDE.md mcp-setup.md
 ```
 
 PowerShell users can create an equivalent archive with `tar.exe`.
@@ -42,7 +38,7 @@ PowerShell users can create an equivalent archive with `tar.exe`.
 Replace the placeholders with your own host and account:
 
 ```bash
-scp -i /path/to/ssh-key agent-memory-deploy.tgz admin@memory-host:/tmp/agent-memory-deploy.tgz
+scp -i /path/to/ssh-key /tmp/agent-memory-deploy.tgz admin@memory-host:/tmp/agent-memory-deploy.tgz
 ssh -i /path/to/ssh-key admin@memory-host
 ```
 
@@ -57,22 +53,28 @@ tar -xzf /tmp/agent-memory-deploy.tgz -C /tmp/agent-memory-installer
 bash /tmp/agent-memory-installer/deploy/install-vps.sh
 ```
 
-For later updates, upload the new archive to the same `/tmp` path and run the
-installer from the current release:
+For later updates, extract the new archive to the installer directory again.
+Always run the installer shipped with the **new** release:
 
 ```bash
-bash /opt/agent-memory/current/deploy/install-vps.sh
+bash /tmp/agent-memory-installer/deploy/install-vps.sh
 ```
 
 The script:
 
 - creates an unprivileged `agent-memory` service account;
-- preserves the previous application release;
-- installs production dependencies;
+- installs production dependencies in a staged release before stopping the service;
+- serializes deployments with a lock and preserves the previous application release;
 - creates a verified backup before updating an existing database;
 - installs the hardened systemd unit;
 - starts the service and applies schema migrations on startup;
-- removes backups older than 30 days.
+- waits for `/ready` before declaring success;
+- restores the previous release and unit on failure, retaining all database writes.
+
+Backups are retained until explicitly removed. Automatic rollback only restores
+code, not the database: schema rollback requires a deliberate restore of the
+verified backup. Test migrations on a database copy before deploying.
+Set `MEMORY_READY_URL` when overriding the service host or port.
 
 ## 4. Optional environment file
 
@@ -104,7 +106,7 @@ Configure the client to run an SSH command equivalent to:
 
 ```bash
 ssh -i /path/to/ssh-key -o BatchMode=yes user@memory-host \
-  "cd /opt/agent-memory/current && MEMORY_API_URL=http://127.0.0.1:39110 /usr/bin/node dist/mcp/server.js"
+  "/usr/bin/node /opt/agent-memory/current/scripts/mcp-vps.mjs"
 ```
 
 If `MEMORY_API_KEY` is enabled, expose it to the remote MCP process through a

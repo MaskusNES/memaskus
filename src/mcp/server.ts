@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { createMemoryHttpClient, jsonToolResult, type MemoryHttpClient } from "./http-client.js";
@@ -638,14 +639,13 @@ export function createMemoryMcpServer(client: MemoryHttpClient): McpServer {
 }
 
 export async function runMemoryMcpServer(): Promise<void> {
-  const baseUrl = process.env.MEMORY_API_URL ?? "http://127.0.0.1:3010";
-  const client = createMemoryHttpClient(baseUrl);
+  const client = createMemoryHttpClient();
   const server = createMemoryMcpServer(client);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   runMemoryMcpServer().catch((error) => {
     console.error(error);
     process.exit(1);
