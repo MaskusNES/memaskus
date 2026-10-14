@@ -113,7 +113,7 @@ export function listMemories(db: MemoryDb, input: MemoryListQuery = {}) {
     params.push(...input.types);
   }
   if (input.query?.trim()) {
-    clauses.push("(LOWER(content) LIKE ? OR LOWER(type) LIKE ? OR LOWER(id) LIKE ?)");
+    clauses.push("(js_lower(content) LIKE ? OR js_lower(type) LIKE ? OR js_lower(id) LIKE ?)");
     const query = `%${input.query.trim().toLowerCase()}%`;
     params.push(query, query, query);
   }
