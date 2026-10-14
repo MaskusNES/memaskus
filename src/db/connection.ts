@@ -10,6 +10,10 @@ export function openDatabase(databasePath: string): MemoryDb {
   fs.mkdirSync(dir, { recursive: true });
 
   const db = new Database(databasePath);
+  // SQLite's built-in LOWER only folds ASCII; match JavaScript query normalization.
+  db.function("js_lower", { deterministic: true }, (value) =>
+    typeof value === "string" ? value.toLowerCase() : null
+  );
   const schemaPath = new URL("./schema.sql", import.meta.url);
   db.pragma("foreign_keys = ON");
   db.pragma("journal_mode = WAL");
