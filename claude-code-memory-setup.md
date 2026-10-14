@@ -3,6 +3,9 @@
 This guide connects Claude Code to a running Agent Memory service through its
 stdio MCP adapter.
 
+For a shared VPS database used by Windows and VPS clients, follow the
+[four-client setup](mcp-setup.md#shared-memory-windows-and-vps-claude-and-codex).
+
 ## Local service
 
 Build and start Agent Memory:

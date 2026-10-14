@@ -62,6 +62,42 @@ ssh -N -L 3010:127.0.0.1:39110 user@memory-host
 
 Then open <http://127.0.0.1:3010/memory>, `/profile` or `/graph`.
 
+## Shared memory: Windows and VPS, Claude and Codex
+
+Keep one HTTP service and database on the VPS when all four clients should share
+memory. A local development service is a separate, isolated installation.
+The legacy `dist/mcp/server.js` command remains supported.
+
+On the VPS, the launcher resolves paths independently of the working directory,
+loads `/etc/agent-memory.env` if it exists, and defaults to port `39110`:
+
+```bash
+codex mcp add agent_memory -- /usr/bin/node /opt/agent-memory/current/scripts/mcp-vps.mjs
+claude mcp add --transport stdio --scope user agent_memory -- /usr/bin/node /opt/agent-memory/current/scripts/mcp-vps.mjs
+```
+
+On Windows, use an existing SSH host alias from your user SSH config. For example,
+if `maskusserver` already selects your server, account and key, run in PowerShell:
+
+```powershell
+codex mcp add agent_memory -- ssh.exe -T -o BatchMode=yes maskusserver "/usr/bin/node /opt/agent-memory/current/scripts/mcp-vps.mjs"
+claude mcp add --transport stdio --scope user agent_memory -- ssh.exe -T -o BatchMode=yes maskusserver "/usr/bin/node /opt/agent-memory/current/scripts/mcp-vps.mjs"
+```
+
+Inspect an existing entry before replacing it (`codex mcp get agent_memory` or
+`claude mcp get agent_memory`). Existing SSH commands pointing at the legacy
+adapter with `MEMORY_API_URL=http://127.0.0.1:39110` continue to work.
+Restart the clients after configuration changes. There is no need to run an
+HTTP service or keep a repository checkout on Windows for these SSH commands.
+
+`MEMORY_ENV_FILE` can select another protected environment file for the launcher.
+It must be readable by the account launching MCP; an unreadable file fails
+explicitly. Inherited environment values take precedence over file values.
+Only use a Node-compatible dotenv file (no shell commands). Do not copy secrets
+into client configuration or the repository.
+
+Codex command syntax: [official MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+
 ## Tools
 
 | Tool | Purpose |
