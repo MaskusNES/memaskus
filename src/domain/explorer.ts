@@ -12,7 +12,7 @@ import { listProfileSlots } from "./profile.js";
 import { listConflicts } from "./review.js";
 import { scopeSqlParts, scopeVisibleFrom } from "./scope.js";
 import { listSourcesForNode } from "./sources.js";
-import type { Scope } from "./types.js";
+import type { Scope, Source } from "./types.js";
 
 function matches(query: string, ...values: unknown[]): boolean {
   if (!query) {
@@ -45,8 +45,17 @@ export function exploreMemory(db: MemoryDb, input: { q?: string; project_id?: st
     .map(publicConflict);
   const profiles = listProfileSlots(db, { project_id: input.project_id }).map(publicProfileSlot);
 
-  const sourceItems = memories.flatMap((memory) =>
-    redactSourcesForMemory(memory, listSourcesForNode(db, memory.id)).map((source) => ({
+  const sources = new Map<string, Source>();
+  for (const memory of memories) {
+    for (const source of redactSourcesForMemory(memory, listSourcesForNode(db, memory.id))) {
+      // A shared source is one item. Preserve its public projection when any
+      // visible parent permits it, regardless of parent ordering.
+      if (!sources.has(source.id) || memory.privacy_level === "normal") {
+        sources.set(source.id, source);
+      }
+    }
+  }
+  const sourceItems = [...sources.values()].map((source) => ({
       kind: "source" as const,
       id: source.id,
       title: source.title ?? source.external_id ?? source.kind,
@@ -54,8 +63,7 @@ export function exploreMemory(db: MemoryDb, input: { q?: string; project_id?: st
       status: source.kind,
       updated_at: source.created_at,
       data: source
-    }))
-  );
+    }));
 
   const items = [
     ...memories.map((memory) => ({

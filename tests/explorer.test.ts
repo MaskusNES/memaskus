@@ -4,6 +4,7 @@ import { buildServer } from "../src/server.js";
 import { insertCandidate, type Candidate } from "../src/domain/candidates.js";
 import { insertConflict } from "../src/domain/review.js";
 import { getMemory } from "../src/domain/nodes.js";
+import { listSourcesForNode } from "../src/domain/sources.js";
 
 describe("explorer search", () => {
   let db: MemoryDb;
@@ -78,6 +79,41 @@ describe("explorer search", () => {
     expect((await explore("foreign")).items).toEqual([]);
     expect((await explore("старинныймаркер", 200, "")).items).toEqual([]);
     expect((await app.inject({ method: "GET", url: "/memory" })).statusCode).toBe(200);
+  });
+
+  it("deduplicates shared sources before search, counts and limits independently of parent text", async () => {
+    const parent = await create("first parent", {
+      scope: { kind: "global" },
+      source: { kind: "manual", title: "source-only marker", content_excerpt: "unique excerpt" }
+    });
+    const source = listSourcesForNode(db, parent)[0]!;
+    for (let i = 0; i < 3; i++) {
+      const id = await create(`other parent ${i}`, { scope: { kind: "global" } });
+      db.prepare("INSERT INTO node_sources (node_id, source_id, created_at) VALUES (?, ?, ?)")
+        .run(id, source.id, source.created_at);
+    }
+    const other = await create("separate parent", {
+      source: { kind: "manual", title: "source-only marker second" }
+    });
+    const otherSource = listSourcesForNode(db, other)[0]!;
+    db.prepare("UPDATE sources SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(otherSource.id);
+    for (const q of [undefined, "source-only marker", "unique excerpt", source.id]) {
+      const result = await explore(q);
+      expect(result.items.filter((item: { id: string }) => item.id === source.id))
+        .toEqual([expect.objectContaining({ kind: "source", data: source })]);
+      expect(result.counts.sources).toBe(2);
+    }
+    expect((await explore("source-only marker", 2)).items.map((item: { id: string }) => item.id))
+      .toEqual([source.id, otherSource.id]);
+
+    const protectedParent = await create("protected parent", { privacy_level: "secret" });
+    db.prepare("INSERT INTO node_sources (node_id, source_id, created_at) VALUES (?, ?, ?)")
+      .run(protectedParent, source.id, source.created_at);
+    for (const updatedAt of ["1999-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"]) {
+      db.prepare("UPDATE nodes SET updated_at = ? WHERE id = ?").run(updatedAt, protectedParent);
+      expect((await explore("unique excerpt")).items)
+        .toEqual([expect.objectContaining({ kind: "source", data: source })]);
+    }
   });
 
   it("matches type, kind, status and literal percent/underscore on public fields", async () => {
