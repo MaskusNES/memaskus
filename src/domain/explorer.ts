@@ -69,7 +69,7 @@ export function exploreMemory(db: MemoryDb, input: { q?: string; project_id?: st
     ...memories.map((memory) => ({
       kind: "memory" as const,
       id: memory.id,
-      title: typeof memory.metadata.title === "string" && memory.metadata.title ? memory.metadata.title : memory.type,
+      title: memory.type,
       content: memory.content,
       status: memory.status,
       updated_at: memory.updated_at,

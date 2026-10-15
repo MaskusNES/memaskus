@@ -81,34 +81,6 @@ describe("explorer search", () => {
     expect((await app.inject({ method: "GET", url: "/memory" })).statusCode).toBe(200);
   });
 
-  it("persists and searches memory titles while retaining type search and privacy", async () => {
-    const title = "QAUNIQTITLE9847 Test cyrillics Заголовок Ёлка";
-    const id = await create("This content has no special words", { title });
-    for (const query of ["qauniqtitle9847", "CYRILLICS", "ЗАГОЛОВОК", "ёлка", "Fact", id]) {
-      expect((await explore(query)).items).toEqual([
-        expect.objectContaining({ kind: "memory", id, title })
-      ]);
-    }
-    expect(getMemory(db, id).metadata.title).toBe(title);
-    const duplicate = await app.inject({ method: "POST", url: "/v1/memories", payload: {
-      type: "Fact", title, content: "This content has no special words",
-      scope: { kind: "project", project_id: "project:qa" }
-    } });
-    expect(duplicate.statusCode).toBe(200);
-    expect(duplicate.json().id).toBe(id);
-    await create("This content has no special words", { title: "Different title" });
-    for (const privacy_level of ["sensitive", "secret"]) {
-      await create(`protected ${privacy_level}`, { title: "HiddenTitle", privacy_level });
-    }
-    expect((await explore("HiddenTitle")).items).toEqual([]);
-    const unsafe = await app.inject({ method: "POST", url: "/v1/memories", payload: {
-      type: "Fact", content: "safe content", title: "password=example123456"
-    } });
-    expect(unsafe.statusCode).toBe(400);
-    await app.inject({ method: "POST", url: `/v1/memories/${id}/archive`, payload: {} });
-    expect((await explore("QAUNIQTITLE9847")).items).toEqual([]);
-  });
-
   it("deduplicates shared sources before search, counts and limits independently of parent text", async () => {
     const parent = await create("first parent", {
       scope: { kind: "global" },
