@@ -39,3 +39,9 @@ export const createMemorySchema = z.object({
   source: sourceSchema,
   metadata: z.record(z.unknown()).optional()
 });
+
+export const explorerQuerySchema = z.object({
+  q: z.string().optional(),
+  project_id: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional()
+});
