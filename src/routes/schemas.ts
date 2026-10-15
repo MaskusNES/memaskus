@@ -31,6 +31,7 @@ export const sourceSchema = z
   .optional();
 
 export const createMemorySchema = z.object({
+  title: z.string().nullable().optional(),
   type: z.string().min(1),
   content: z.string().min(1),
   scope: scopeSchema,

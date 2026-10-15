@@ -8,6 +8,7 @@ import { createSource, type CreateSourceInput } from "./sources.js";
 import type { MemoryNode, PrivacyLevel, Scope } from "./types.js";
 
 export type CreateMemoryInput = {
+  title?: string | null;
   type: string;
   content: string;
   scope?: Scope;
@@ -29,11 +30,19 @@ export function normalizeMemoryMetadata(metadata: Record<string, unknown> | unde
   return normalized;
 }
 
+// Keep optional titles in metadata so older releases can read the same database.
+export function memoryInputMetadata(input: CreateMemoryInput, scope: Scope): Record<string, unknown> {
+  if (input.title != null) assertSafeForStorage(input.title, "memory title");
+  return normalizeMemoryMetadata(
+    input.title === undefined ? input.metadata : { ...input.metadata, title: input.title }, scope
+  );
+}
+
 export function createMemory(db: MemoryDb, input: CreateMemoryInput): MemoryNode {
   assertSafeForStorage(input.content, "memory content");
   const now = nowIso();
   const scope = input.scope ?? { kind: "global" };
-  const metadata = normalizeMemoryMetadata(input.metadata, scope);
+  const metadata = memoryInputMetadata(input, scope);
   const node: MemoryNode = {
     id: newId("node"),
     type: input.type,

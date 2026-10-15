@@ -69,7 +69,7 @@ export function exploreMemory(db: MemoryDb, input: { q?: string; project_id?: st
     ...memories.map((memory) => ({
       kind: "memory" as const,
       id: memory.id,
-      title: memory.type,
+      title: typeof memory.metadata.title === "string" && memory.metadata.title ? memory.metadata.title : memory.type,
       content: memory.content,
       status: memory.status,
       updated_at: memory.updated_at,
@@ -104,7 +104,8 @@ export function exploreMemory(db: MemoryDb, input: { q?: string; project_id?: st
     })),
     ...sourceItems
   ]
-    .filter((item) => matches(query, item.id, item.kind, item.title, item.content, item.status))
+    .filter((item) => matches(query, item.id, item.kind, item.title, item.content, item.status,
+      item.kind === "memory" ? item.data.type : undefined))
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
     .slice(0, limit);
 

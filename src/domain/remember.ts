@@ -3,7 +3,7 @@ import type { MemoryDb } from "../db/connection.js";
 import { nowIso } from "../shared/time.js";
 import { createRelatedLinksForMemory } from "./links.js";
 import { mapNode } from "./mappers.js";
-import { createMemory, normalizeMemoryMetadata, type CreateMemoryInput } from "./nodes.js";
+import { createMemory, memoryInputMetadata, normalizeMemoryMetadata, type CreateMemoryInput } from "./nodes.js";
 import { assertSafeForStorage, redactSecrets } from "./privacy.js";
 import { applyMemoryToProfile } from "./profile.js";
 import { createSource } from "./sources.js";
@@ -16,7 +16,7 @@ function contentKey(content: string): string {
 export function createOrReuseMemory(db: MemoryDb, input: CreateMemoryInput) {
   assertSafeForStorage(input.content, "memory content");
   const scope = input.scope ?? { kind: "global" };
-  const metadata = normalizeMemoryMetadata(input.metadata, scope);
+  const metadata = memoryInputMetadata(input, scope);
   const key = contentKey(input.content);
   return db.transaction(() => {
     // IS compares missing identity fields as NULL too; visibility filters are too broad here.

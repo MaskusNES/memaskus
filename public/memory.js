@@ -4,6 +4,7 @@ const state = {
   candidates: [],
   conflicts: [],
   memories: [],
+  memoryCount: 0,
   selected: null,
   explanation: null
 };
@@ -77,7 +78,7 @@ function queueItems() {
 function renderQueue() {
   const items = queueItems();
   elements.queueList.replaceChildren();
-  elements.queueCount.textContent = String(items.length);
+  elements.queueCount.textContent = String(state.view === "explorer" ? state.memoryCount : items.length);
   const labels = {
     review: ["Review inbox", "Кандидаты"],
     conflicts: ["Conflict center", "Конфликты"],
@@ -236,6 +237,7 @@ async function loadAll(preserveSelection = false) {
   state.candidates = candidateData.candidates ?? [];
   state.conflicts = conflictData.conflicts ?? [];
   state.memories = explorerData.items ?? [];
+  state.memoryCount = explorerData.counts?.memories ?? 0;
   elements.pendingMetric.textContent = String(state.candidates.length);
   elements.conflictMetric.textContent = String(state.conflicts.length);
   elements.memoryMetric.textContent = String(explorerData.counts?.memories ?? 0);
