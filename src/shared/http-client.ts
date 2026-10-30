@@ -9,7 +9,7 @@ export function createMemoryHttpClient(baseUrl: string = process.env.MEMORY_API_
   return {
     async request(path: string, options: RequestInit = {}) {
       const headers = new Headers(options.headers);
-      if (!headers.has("content-type")) headers.set("content-type", "application/json");
+      if (options.body != null && !headers.has("content-type")) headers.set("content-type", "application/json");
       if (apiKey && !headers.has("x-memory-api-key")) headers.set("x-memory-api-key", apiKey);
       const response = await fetchImpl(`${normalizedBaseUrl}${path}`, {
         ...options,

@@ -145,6 +145,16 @@ export function runMigrations(db: MemoryDb, schemaUrl: URL): void {
   });
 
   migrate();
+  // Additive extensions deliberately retain the v5 compatibility floor: the
+  // previous loader rejects a higher user_version, but tolerates extra columns.
+  db.transaction(() => {
+    for (const table of ["memory_revisions", "profile_slot_revisions"]) {
+      addColumn(db, table, "previous_privacy_level TEXT NOT NULL DEFAULT 'secret'");
+      addColumn(db, table, "next_privacy_level TEXT NOT NULL DEFAULT 'secret'");
+    }
+    db.prepare(`INSERT OR IGNORE INTO schema_migrations (version, name, applied_at)
+      VALUES (6, 'additive revision privacy with v5 rollback compatibility', ?)` ).run(nowIso());
+  })();
   // Repair an index that was removed or became available after the v4 migration.
   ensureNodeSearchIndex(db);
 }

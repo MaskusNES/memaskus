@@ -3,7 +3,7 @@ import { ValidationError } from "../shared/errors.js";
 import { newId } from "../shared/ids.js";
 import { nowIso } from "../shared/time.js";
 import { mapNode } from "./mappers.js";
-import { metadataKnowledgeScope } from "./links.js";
+import { linkScopesCompatible, metadataKnowledgeScope } from "./links.js";
 import { getMemory } from "./nodes.js";
 import { archiveProfileForMemory, synchronizeProfileForMemory } from "./profile.js";
 import { assertSafeForStorage, redactSecrets, sanitizeMetadata } from "./privacy.js";
@@ -35,6 +35,8 @@ export type UpdateMemoryInput = {
 };
 
 type RevisionRow = {
+  previous_privacy_level: PrivacyLevel;
+  next_privacy_level: PrivacyLevel;
   id: string;
   memory_id: string;
   previous_content: string | null;
@@ -58,6 +60,8 @@ function mapRevision(row: RevisionRow): MemoryRevision {
   return {
     id: row.id,
     memory_id: row.memory_id,
+    previous_privacy_level: row.previous_privacy_level,
+    next_privacy_level: row.next_privacy_level,
     previous_content: row.previous_content,
     next_content: row.next_content,
     previous_scope: row.previous_scope_json ? JSON.parse(row.previous_scope_json) : null,
@@ -70,12 +74,14 @@ function mapRevision(row: RevisionRow): MemoryRevision {
 function insertRevision(
   db: MemoryDb,
   existing: MemoryNode,
-  next: Pick<MemoryNode, "content" | "scope">,
+  next: Pick<MemoryNode, "content" | "scope" | "privacy_level">,
   reason: string
 ): MemoryRevision {
   const revision: MemoryRevision = {
     id: newId("mem_rev"),
     memory_id: existing.id,
+    previous_privacy_level: existing.privacy_level,
+    next_privacy_level: next.privacy_level,
     previous_content: existing.content,
     next_content: next.content,
     previous_scope: existing.scope,
@@ -85,8 +91,8 @@ function insertRevision(
   };
   db.prepare(
     `INSERT INTO memory_revisions (
-      id, memory_id, previous_content, next_content, previous_scope_json, next_scope_json, reason, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      id, memory_id, previous_content, next_content, previous_scope_json, next_scope_json, reason, created_at, previous_privacy_level, next_privacy_level
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     revision.id,
     revision.memory_id,
@@ -95,7 +101,9 @@ function insertRevision(
     JSON.stringify(revision.previous_scope),
     JSON.stringify(revision.next_scope),
     revision.reason,
-    revision.created_at
+    revision.created_at,
+    revision.previous_privacy_level,
+    revision.next_privacy_level
   );
   return revision;
 }
@@ -155,7 +163,15 @@ export function updateMemory(db: MemoryDb, id: string, input: UpdateMemoryInput)
   const now = nowIso();
 
   const transaction = db.transaction(() => {
-    insertRevision(db, existing, { content: nextContent, scope: nextScope }, input.reason ?? "memory corrected");
+    const proposed = { ...existing, scope: nextScope, metadata: nextMetadata };
+    const edges = db.prepare("SELECT from_id, to_id, relation FROM edges WHERE status = 'active' AND (from_id = ? OR to_id = ?)").all(id, id) as Array<{ from_id: string; to_id: string; relation: string }>;
+    for (const edge of edges) {
+      const other = getMemory(db, edge.from_id === id ? edge.to_id : edge.from_id);
+      if (!linkScopesCompatible(proposed, other, edge.relation)) {
+        throw new ValidationError("Scope change would invalidate active links");
+      }
+    }
+    insertRevision(db, existing, { content: nextContent, scope: nextScope, privacy_level: input.privacy_level ?? existing.privacy_level }, input.reason ?? "memory corrected");
     db.prepare(
       `UPDATE nodes SET
          content = ?, scope_kind = ?, scope_user_id = ?, scope_project_id = ?,
@@ -216,6 +232,10 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
       )
       .all(id, id, id) as Array<{ id: string; source_id: string | null }>;
     const candidateIds = candidateRows.map((row) => row.id);
+    const forgottenValues = new Set([existing.content, ...candidateRows.map((row) =>
+      (db.prepare("SELECT content FROM candidates WHERE id = ?").get(row.id) as { content: string }).content)]);
+    const historical = db.prepare("SELECT previous_content, next_content FROM memory_revisions WHERE memory_id = ?").all(id) as Array<{ previous_content: string | null; next_content: string }>;
+    historical.forEach((revision) => { if (revision.previous_content) forgottenValues.add(revision.previous_content); forgottenValues.add(revision.next_content); });
     const sourceRows = db.prepare("SELECT source_id FROM node_sources WHERE node_id = ?").all(id) as Array<{ source_id: string }>;
     const sourceIds = new Set([
       ...sourceRows.map((row) => row.source_id),
@@ -259,6 +279,20 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
       )
       .all(id, id, ...candidateIds) as Array<{ id: string }>;
     for (const slot of slotRows) {
+      const historicalSources = db.prepare("SELECT source_id FROM profile_slot_revisions WHERE slot_id = ? AND memory_id = ? AND source_id IS NOT NULL")
+        .all(slot.id, id) as Array<{ source_id: string }>;
+      historicalSources.forEach((row) => sourceIds.add(row.source_id));
+      for (const value of forgottenValues) {
+        db.prepare("UPDATE profile_slot_revisions SET previous_content = ?, reason = ? WHERE slot_id = ? AND previous_content = ?").run(tombstone, tombstone, slot.id, value);
+        db.prepare("UPDATE profile_slot_revisions SET next_content = ?, reason = ? WHERE slot_id = ? AND next_content = ?").run(tombstone, tombstone, slot.id, value);
+        db.prepare("UPDATE profile_slot_sources SET evidence_text = ? WHERE slot_id = ? AND evidence_text = ?").run(tombstone, slot.id, value);
+      }
+      const current = db.prepare("SELECT metadata_json FROM profile_slots WHERE id = ?").get(slot.id) as { metadata_json: string };
+      if (JSON.parse(current.metadata_json).source_memory_id !== id) {
+        db.prepare(`UPDATE profile_slot_revisions SET previous_content = ?, next_content = ?, reason = ?
+          WHERE slot_id = ? AND memory_id = ?`).run(tombstone, tombstone, tombstone, slot.id, id);
+        continue;
+      }
       const slotSourceRows = db
         .prepare("SELECT source_id FROM profile_slot_sources WHERE slot_id = ?")
         .all(slot.id) as Array<{ source_id: string }>;
@@ -280,11 +314,25 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
     }
 
     for (const sourceId of sourceIds) {
+      // Legacy evidence can duplicate a complete shared conversation. Rebuild
+      // contaminated surviving links from their independent owner's value.
+      for (const value of forgottenValues) {
+        db.prepare(`UPDATE node_sources SET evidence_text = (SELECT content FROM nodes WHERE id = node_id)
+          WHERE source_id = ? AND instr(evidence_text, ?) > 0`).run(sourceId, value);
+        db.prepare(`UPDATE profile_slot_sources SET evidence_text = (SELECT content FROM profile_slots WHERE id = slot_id)
+          WHERE source_id = ? AND evidence_text != ? AND instr(evidence_text, ?) > 0`).run(sourceId, tombstone, value);
+      }
+      const remaining = db.prepare(`SELECT ns.evidence_text FROM node_sources ns JOIN nodes n ON n.id = ns.node_id
+        WHERE ns.source_id = ? AND n.status != 'deleted'
+        UNION ALL SELECT pss.evidence_text FROM profile_slot_sources pss JOIN profile_slots ps ON ps.id = pss.slot_id
+        WHERE pss.source_id = ? AND ps.status != 'deleted'`).all(sourceId, sourceId) as Array<{ evidence_text: string | null }>;
+      const retained = remaining.map((row) => row.evidence_text).filter((value): value is string =>
+        Boolean(value && value !== tombstone && ![...forgottenValues].some((forgotten) => value.includes(forgotten))));
       db.prepare(
         `UPDATE sources
          SET external_id = NULL, title = ?, content_excerpt = ?, metadata_json = '{}'
          WHERE id = ?`
-      ).run(tombstone, tombstone, sourceId);
+      ).run(retained.length ? "Shared evidence" : tombstone, retained.length ? retained.join("\n") : tombstone, sourceId);
     }
 
     db.prepare(

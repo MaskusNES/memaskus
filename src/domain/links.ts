@@ -31,6 +31,12 @@ export function knowledgeScope(memory: MemoryNode): KnowledgeScope {
   return metadataKnowledgeScope(memory.metadata, memory.scope);
 }
 
+export function linkScopesCompatible(from: MemoryNode, to: MemoryNode, relation: string): boolean {
+  if (knowledgeScope(from) !== knowledgeScope(to)) return false;
+  if (relation.toUpperCase() === "SUPERSEDES" && knowledgeScope(from) === "global") return true;
+  return exactScopeMatch(from.scope, to.scope) && exactScopeMatch(to.scope, from.scope);
+}
+
 export function createLink(db: MemoryDb, input: CreateLinkInput): Edge {
   const from = getMemory(db, input.from_id);
   const to = getMemory(db, input.to_id);
@@ -42,7 +48,7 @@ export function createLink(db: MemoryDb, input: CreateLinkInput): Edge {
   if (from.status !== "active" || (to.status !== "active" && !supersessionTarget)) {
     throw new ValidationError("Links can only be created between active memories");
   }
-  if (!exactScopeMatch(from.scope, to.scope) || !exactScopeMatch(to.scope, from.scope)) {
+  if (!linkScopesCompatible(from, to, input.relation)) {
     throw new ValidationError(`Cannot link memories from different physical scopes`);
   }
 

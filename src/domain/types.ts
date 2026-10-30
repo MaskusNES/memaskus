@@ -74,6 +74,8 @@ export type ProfileSlot = {
 };
 
 export type ProfileSlotRevision = {
+  previous_privacy_level?: PrivacyLevel;
+  next_privacy_level?: PrivacyLevel;
   id: string;
   slot_id: string;
   previous_content?: string | null;
@@ -86,6 +88,8 @@ export type ProfileSlotRevision = {
 };
 
 export type MemoryRevision = {
+  previous_privacy_level?: PrivacyLevel;
+  next_privacy_level?: PrivacyLevel;
   id: string;
   memory_id: string;
   previous_content?: string | null;

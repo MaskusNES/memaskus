@@ -4,12 +4,12 @@ import type { MemoryConflict } from "./review.js";
 import type { MemoryNode, MemoryRevision, ProfileSlot, ProfileSlotRevision, Source } from "./types.js";
 
 const secretPatterns: RegExp[] = [
-  /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/iu,
+  /-----BEGIN ((?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)/iu,
   /\bsk-[a-z0-9_-]{20,}\b/iu,
   /\b(?:ghp|gho|ghu|ghs|github_pat)_[a-z0-9_]{20,}\b/iu,
   /\bAKIA[0-9A-Z]{16}\b/u,
   /\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b/u,
-  /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret)\s*[:=]\s*["']?[^\s"',;]{8,}/iu
+  /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret)["']?\s*[:=]\s*["']?[^\s"',;]{8,}/iu
 ];
 
 export function containsSecret(value: string): boolean {
@@ -87,6 +87,10 @@ export function publicProfileSlot(slot: ProfileSlot): ProfileSlot {
   };
 }
 
+function historyPrivacy(current: MemoryNode["privacy_level"], historical?: MemoryNode["privacy_level"]): MemoryNode["privacy_level"] {
+  return current === "normal" ? historical ?? "secret" : current;
+}
+
 export function publicProfileRevision(
   revision: ProfileSlotRevision,
   privacyLevel: ProfileSlot["privacy_level"]
@@ -96,9 +100,9 @@ export function publicProfileRevision(
     previous_content:
       revision.previous_content === null || revision.previous_content === undefined
         ? revision.previous_content
-        : redactedContent({ content: revision.previous_content, privacy_level: privacyLevel }),
-    next_content: redactedContent({ content: revision.next_content, privacy_level: privacyLevel }),
-    reason: privacyLevel === "normal" ? revision.reason : "protected profile revision"
+        : redactedContent({ content: revision.previous_content, privacy_level: historyPrivacy(privacyLevel, revision.previous_privacy_level) }),
+    next_content: redactedContent({ content: revision.next_content, privacy_level: historyPrivacy(privacyLevel, revision.next_privacy_level) }),
+    reason: historyPrivacy(privacyLevel, revision.previous_privacy_level) === "normal" && revision.next_privacy_level === "normal" ? (revision.reason ? redactSecrets(revision.reason) : revision.reason) : "protected profile revision"
   };
 }
 
@@ -111,10 +115,10 @@ export function publicMemoryRevision(
     previous_content:
       revision.previous_content === null || revision.previous_content === undefined
         ? revision.previous_content
-        : redactedContent({ content: revision.previous_content, privacy_level: privacyLevel }),
-    next_content: redactedContent({ content: revision.next_content, privacy_level: privacyLevel }),
+        : redactedContent({ content: revision.previous_content, privacy_level: historyPrivacy(privacyLevel, revision.previous_privacy_level) }),
+    next_content: redactedContent({ content: revision.next_content, privacy_level: historyPrivacy(privacyLevel, revision.next_privacy_level) }),
     reason:
-      privacyLevel === "normal"
+      historyPrivacy(privacyLevel, revision.previous_privacy_level) === "normal" && revision.next_privacy_level === "normal"
         ? revision.reason
           ? redactSecrets(revision.reason)
           : revision.reason

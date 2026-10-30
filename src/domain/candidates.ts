@@ -472,7 +472,8 @@ export function mergeCandidate(db: MemoryDb, id: string, memoryId: string): { ca
          VALUES (?, ?, ?, ?)`
       ).run(memoryId, candidate.source_id, redactSecrets(candidate.content), nowIso());
     }
-    db.prepare("UPDATE candidates SET status = 'merged', updated_at = ? WHERE id = ?").run(nowIso(), id);
+    db.prepare("UPDATE candidates SET status = 'merged', metadata_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify({ ...candidate.metadata, approved_memory_id: memoryId }), nowIso(), id);
     db.prepare(
       `UPDATE candidate_conflicts
        SET status = 'resolved', resolution = ?, updated_at = ?

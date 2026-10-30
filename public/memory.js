@@ -118,13 +118,19 @@ function renderQueue() {
   }
 }
 
+let candidateContentChanged = false;
+$("#candidateContent").addEventListener("input", () => { candidateContentChanged = true; });
+
 function renderCandidate(candidate) {
+  candidateContentChanged = false;
+  $("#candidateContent").required = false;
   setDetail("candidate");
   $("#candidateStatus").textContent = candidate.needs_confirmation ? "нужно подтверждение" : candidate.status;
   $("#candidateType").value = candidate.type;
   $("#candidateConfidence").value = candidate.confidence;
   $("#candidatePrivacy").value = candidate.privacy_level;
-  $("#candidateContent").value = candidate.content;
+  $("#candidateContent").value = candidate.privacy_level === "normal" ? candidate.content : "";
+  $("#candidateContent").placeholder = candidate.privacy_level === "normal" ? "" : "Введите текст для явной замены";
   $("#candidateMeta").textContent = [
     `Источник: ${candidate.source_id ?? "не указан"}`,
     `Автор: ${candidate.speaker_role ?? "unknown"}`,
@@ -276,7 +282,7 @@ $("#candidateForm").addEventListener("submit", async (event) => {
     method: "PATCH",
     body: JSON.stringify({
       type: $("#candidateType").value.trim(),
-      content: $("#candidateContent").value.trim(),
+      ...(candidateContentChanged ? { content: $("#candidateContent").value.trim() } : {}),
       confidence: Number($("#candidateConfidence").value),
       privacy_level: $("#candidatePrivacy").value
     })
@@ -369,7 +375,7 @@ $("#feedbackButtons").addEventListener("click", async (event) => {
     body: JSON.stringify({ rating: button.dataset.rating })
   });
   notify("Оценка сохранена.");
-  await renderMemory(state.selected);
+  await selectItem(state.selected);
 });
 
 try {

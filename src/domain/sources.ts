@@ -35,6 +35,17 @@ export function createSource(db: MemoryDb, input: CreateSourceInput): Source {
   return source;
 }
 
+// Legacy links may contain the whole shared conversation. Only evidence that
+// belongs to this node is safe to project; otherwise use the node's own value.
+export function sourceEvidenceForNode(db: MemoryDb, nodeId: string, sourceId: string, evidence: string | null): string | null {
+  const node = db.prepare("SELECT content FROM nodes WHERE id = ?").get(nodeId) as { content: string };
+  const source = db.prepare("SELECT kind FROM sources WHERE id = ?").get(sourceId) as { kind: string };
+  const shared = source.kind === "conversation" || Boolean(db.prepare("SELECT 1 FROM node_sources WHERE source_id = ? AND node_id != ? LIMIT 1").get(sourceId, nodeId)) ||
+    Boolean(db.prepare("SELECT 1 FROM candidates WHERE source_id = ? LIMIT 1").get(sourceId));
+  if (!shared || !evidence || node.content.includes(evidence)) return evidence;
+  return node.content;
+}
+
 export function listSourcesForNode(db: MemoryDb, nodeId: string): Source[] {
   const rows = db
     .prepare(
@@ -46,14 +57,29 @@ export function listSourcesForNode(db: MemoryDb, nodeId: string): Source[] {
     )
     .all(nodeId);
 
-  return rows.map((row) => mapSource(row as never));
+  const protectedHistory = db.prepare(`SELECT 1 FROM memory_revisions
+    WHERE memory_id = ? AND (previous_privacy_level != 'normal' OR next_privacy_level != 'normal') LIMIT 1`).get(nodeId);
+  return rows.map((row) => {
+    const source = mapSource(row as never);
+    const shared = source.kind === "conversation" || Boolean(db.prepare(`SELECT 1 FROM node_sources WHERE source_id = ? AND node_id != ? LIMIT 1`).get(source.id, nodeId)) ||
+      Boolean(db.prepare(`SELECT 1 FROM candidates WHERE source_id = ? LIMIT 1`).get(source.id));
+    if (!shared && !protectedHistory) return source;
+    const evidence = db.prepare("SELECT evidence_text FROM node_sources WHERE node_id = ? AND source_id = ?").get(nodeId, source.id) as { evidence_text: string | null };
+    return {
+      ...source,
+      title: "[redacted: shared source]",
+      external_id: null,
+      content_excerpt: protectedHistory ? "[redacted: protected source]" : redactSecrets(sourceEvidenceForNode(db, nodeId, source.id, evidence.evidence_text) ?? ""),
+      metadata: {}
+    };
+  });
 }
 
 export function listSourceEvidenceForNode(
   db: MemoryDb,
   nodeId: string
 ): Array<{ source_id: string; evidence_text: string | null }> {
-  return db
+  const rows = db
     .prepare(
       `SELECT source_id, evidence_text
        FROM node_sources
@@ -61,4 +87,5 @@ export function listSourceEvidenceForNode(
        ORDER BY created_at DESC`
     )
     .all(nodeId) as Array<{ source_id: string; evidence_text: string | null }>;
+  return rows.map((row) => ({ ...row, evidence_text: sourceEvidenceForNode(db, nodeId, row.source_id, row.evidence_text) }));
 }
