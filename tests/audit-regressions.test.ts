@@ -81,6 +81,59 @@ describe("technical audit regressions", () => {
     }
   });
 
+  it.each(["legacy", "manual"])("isolates a %s source shared only with a protected foreign profile slot", async (kind) => {
+    const quote = "For new projects choose TypeScript";
+    const hidden = "PROFILE_PRIVATE_FRAGMENT";
+    const source = createSource(db, { kind, title: hidden, external_id: hidden,
+      content_excerpt: `${quote}; ${hidden}`, metadata: { text: hidden } });
+    const visible = memory("The user prefers TypeScript", { scope: { kind: "global" } });
+    db.prepare("INSERT INTO node_sources VALUES (?, ?, ?, ?)").run(visible.id, source.id, quote, visible.created_at);
+    await send("POST", "/v1/profile/slots", { topic: "qa", content: hidden,
+      knowledge_scope: "project_local", project_id: "project:foreign", privacy_level: "sensitive",
+      source_id: source.id, evidence_text: hidden }, 201);
+    for (const result of [await send("GET", `/v1/memories/${visible.id}/explain`),
+      await send("POST", "/v1/recall", { query: "TypeScript", scope: { kind: "global" }, include_sources: true }),
+      await send("GET", "/v1/explorer?q=TypeScript")]) {
+      expect(JSON.stringify(result)).toContain(quote);
+      expect(JSON.stringify(result)).not.toContain(hidden);
+    }
+    // Legacy links may also contain the full mixed excerpt rather than a quote.
+    db.prepare("UPDATE node_sources SET evidence_text = ? WHERE node_id = ?").run(`${quote}; ${hidden}`, visible.id);
+    const mixed = await send("GET", `/v1/memories/${visible.id}/explain`);
+    expect(mixed.evidence[0].evidence_text).toBe(visible.content);
+    expect(JSON.stringify(mixed)).not.toContain(hidden);
+  });
+
+  it("retains a conversation quote that differs from the normalized memory assertion", async () => {
+    const quote = "Для новых проектов выбирай TypeScript";
+    const node = memory("Пользователь предпочитает TypeScript", { scope: { kind: "global" },
+      source: { kind: "conversation", content_excerpt: quote } });
+    const explanation = await send("GET", `/v1/memories/${node.id}/explain`);
+    expect(explanation.evidence[0].evidence_text).toBe(quote);
+    expect(explanation.sources[0].content_excerpt).toBe(quote);
+    const recall = await send("POST", "/v1/recall", { query: "TypeScript", scope: { kind: "global" }, include_sources: true });
+    expect(recall.results.find((item: { id: string }) => item.id === node.id).sources[0].content_excerpt).toBe(quote);
+  });
+
+  it.each([false, true])("forgets manual history of a former slot owner and retains independent replacement history (legacy=%s)", async (legacy) => {
+    const m1 = memory("FORMER_OWNER_ORIGINAL", { type: "Preference", metadata: { profile_sub_topic: "manual-history" } });
+    const slot = applyMemoryToProfile(db, m1)!;
+    await send("PATCH", `/v1/profile/slots/${slot.id}`, { content: "FORMER_OWNER_MANUAL_EDIT" });
+    const manual = db.prepare("SELECT memory_id FROM profile_slot_revisions WHERE next_content = ?").get("FORMER_OWNER_MANUAL_EDIT");
+    expect(manual).toEqual({ memory_id: m1.id });
+    if (legacy) db.prepare("UPDATE profile_slot_revisions SET memory_id = NULL WHERE next_content = ?").run("FORMER_OWNER_MANUAL_EDIT");
+    const m2 = memory("Independent replacement original", { type: "Preference", metadata: { profile_sub_topic: "manual-history" } });
+    applyMemoryToProfile(db, m2, { force_replace: true });
+    await send("PATCH", `/v1/profile/slots/${slot.id}`, { content: "Independent replacement edited" });
+    await send("DELETE", `/v1/memories/${m1.id}`);
+    const details = await send("GET", `/v1/profile/slots/${slot.id}`);
+    expect(JSON.stringify(details)).not.toContain("FORMER_OWNER");
+    expect(getProfileSlot(db, slot.id)).toMatchObject({ status: "active", content: "Independent replacement edited" });
+    expect(details.revisions).toEqual(expect.arrayContaining([expect.objectContaining({
+      previous_content: m2.content, next_content: "Independent replacement edited", memory_id: m2.id
+    })]));
+  });
+
   it.each(["secret", "sensitive"] as const)("keeps %s historical memory and slot values private after downgrade", async (privacy_level) => {
     const old = memory("HISTORICAL_PROTECTED_VALUE", { type: "Preference", privacy_level });
     const slot = applyMemoryToProfile(db, old)!;

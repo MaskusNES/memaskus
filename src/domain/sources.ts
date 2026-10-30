@@ -35,15 +35,29 @@ export function createSource(db: MemoryDb, input: CreateSourceInput): Source {
   return source;
 }
 
-// Legacy links may contain the whole shared conversation. Only evidence that
-// belongs to this node is safe to project; otherwise use the node's own value.
+// A source can have owners in all three stores, including profile-only owners.
+function hasOtherSourceOwners(db: MemoryDb, nodeId: string, sourceId: string): boolean {
+  return Boolean(db.prepare(`SELECT 1 FROM node_sources WHERE source_id = ? AND node_id != ?
+    UNION ALL SELECT 1 FROM candidates WHERE source_id = ?
+    UNION ALL SELECT 1 FROM profile_slot_sources WHERE source_id = ? LIMIT 1`)
+    .get(sourceId, nodeId, sourceId, sourceId));
+}
+
+// Evidence is a quote, not necessarily a substring of the normalized assertion.
+// Reject legacy mixed excerpts using the other owners' values and evidence,
+// rather than requiring a literal match with the assertion.
 export function sourceEvidenceForNode(db: MemoryDb, nodeId: string, sourceId: string, evidence: string | null): string | null {
+  if (!evidence || !hasOtherSourceOwners(db, nodeId, sourceId)) return evidence;
   const node = db.prepare("SELECT content FROM nodes WHERE id = ?").get(nodeId) as { content: string };
-  const source = db.prepare("SELECT kind FROM sources WHERE id = ?").get(sourceId) as { kind: string };
-  const shared = source.kind === "conversation" || Boolean(db.prepare("SELECT 1 FROM node_sources WHERE source_id = ? AND node_id != ? LIMIT 1").get(sourceId, nodeId)) ||
-    Boolean(db.prepare("SELECT 1 FROM candidates WHERE source_id = ? LIMIT 1").get(sourceId));
-  if (!shared || !evidence || node.content.includes(evidence)) return evidence;
-  return node.content;
+  const foreignValues = db.prepare(`SELECT n.content, ns.evidence_text FROM node_sources ns
+    JOIN nodes n ON n.id = ns.node_id WHERE ns.source_id = ? AND ns.node_id != ?
+    UNION ALL SELECT content, NULL FROM candidates WHERE source_id = ?
+    UNION ALL SELECT ps.content, pss.evidence_text FROM profile_slot_sources pss
+    JOIN profile_slots ps ON ps.id = pss.slot_id WHERE pss.source_id = ?`)
+    .all(sourceId, nodeId, sourceId, sourceId) as Array<{ content: string; evidence_text: string | null }>;
+  const contaminated = foreignValues.some((owner) => [owner.content, owner.evidence_text].some((value) =>
+    value && evidence.includes(value) && !node.content.includes(value)));
+  return contaminated ? node.content : redactSecrets(evidence);
 }
 
 export function listSourcesForNode(db: MemoryDb, nodeId: string): Source[] {
@@ -61,8 +75,7 @@ export function listSourcesForNode(db: MemoryDb, nodeId: string): Source[] {
     WHERE memory_id = ? AND (previous_privacy_level != 'normal' OR next_privacy_level != 'normal') LIMIT 1`).get(nodeId);
   return rows.map((row) => {
     const source = mapSource(row as never);
-    const shared = source.kind === "conversation" || Boolean(db.prepare(`SELECT 1 FROM node_sources WHERE source_id = ? AND node_id != ? LIMIT 1`).get(source.id, nodeId)) ||
-      Boolean(db.prepare(`SELECT 1 FROM candidates WHERE source_id = ? LIMIT 1`).get(source.id));
+    const shared = source.kind === "conversation" || hasOtherSourceOwners(db, nodeId, source.id);
     if (!shared && !protectedHistory) return source;
     const evidence = db.prepare("SELECT evidence_text FROM node_sources WHERE node_id = ? AND source_id = ?").get(nodeId, source.id) as { evidence_text: string | null };
     return {

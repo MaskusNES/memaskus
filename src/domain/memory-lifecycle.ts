@@ -279,6 +279,17 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
       )
       .all(id, id, ...candidateIds) as Array<{ id: string }>;
     for (const slot of slotRows) {
+      // NULL memory_id in legacy manual revisions inherits the preceding owner.
+      // On replacement, previous_content still belongs to the outgoing owner.
+      const revisions = db.prepare(`SELECT memory_id, previous_content, next_content
+        FROM profile_slot_revisions WHERE slot_id = ? ORDER BY rowid`)
+        .all(slot.id) as Array<{ memory_id: string | null; previous_content: string | null; next_content: string }>;
+      let owner: string | null = null;
+      for (const revision of revisions) {
+        if (owner === id && revision.previous_content) forgottenValues.add(revision.previous_content);
+        owner = revision.memory_id ?? owner;
+        if (owner === id) forgottenValues.add(revision.next_content);
+      }
       const historicalSources = db.prepare("SELECT source_id FROM profile_slot_revisions WHERE slot_id = ? AND memory_id = ? AND source_id IS NOT NULL")
         .all(slot.id, id) as Array<{ source_id: string }>;
       historicalSources.forEach((row) => sourceIds.add(row.source_id));

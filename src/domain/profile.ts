@@ -440,6 +440,9 @@ function patchProfileSlotInternal(db: MemoryDb, id: string, input: PatchProfileS
   if (input.content !== undefined) {
     assertSafeForStorage(input.content, "profile content");
   }
+  // A manual edit remains part of the current projection owner's history.
+  const revisionMemoryId = input.memory_id ??
+    (typeof existing.metadata.source_memory_id === "string" ? existing.metadata.source_memory_id : undefined);
   const nextContent = input.content ?? existing.content;
   const nextConfidence = input.confidence === undefined ? existing.confidence : normalizeConfidence(input.confidence);
   const nextPrivacyLevel = input.privacy_level ?? existing.privacy_level;
@@ -459,7 +462,7 @@ function patchProfileSlotInternal(db: MemoryDb, id: string, input: PatchProfileS
     !revisionExistsForEvidence(db, {
       slot_id: id,
       next_content: nextContent,
-      memory_id: input.memory_id,
+      memory_id: revisionMemoryId,
       candidate_id: input.candidate_id,
       source_id: input.source_id
     });
@@ -473,7 +476,7 @@ function patchProfileSlotInternal(db: MemoryDb, id: string, input: PatchProfileS
       next_content: nextContent,
       reason: input.reason ?? "profile slot patched",
       candidate_id: input.candidate_id,
-      memory_id: input.memory_id,
+      memory_id: revisionMemoryId,
       source_id: input.source_id
     });
   }
