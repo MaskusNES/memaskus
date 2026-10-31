@@ -64,6 +64,23 @@ describe("technical audit regressions", () => {
     expect(JSON.stringify(sources)).not.toContain("unfinished body");
   });
 
+  it.each([true, false])("redacts PEM before splitting unlabelled review text (closed=%s)", async (closed) => {
+    const result = await send("POST", "/v1/review/conversation", {
+      project_id: "project:qa", analysis_mode: "heuristic",
+      text: `No, keep the existing approach.\n-----BEGIN PRIVATE KEY-----\nNo, SYNTHETIC_PEM_BODY\n${closed ? "-----END PRIVATE KEY-----" : "UNFINISHED_PEM_BODY"}`
+    }, 201);
+    expect(result.preference_review.disagreements).toHaveLength(1);
+    expect(result.preference_review.disagreements[0].user_text).toBe("No, keep the existing approach.");
+    expect(result.preference_review.clarification_questions).toHaveLength(1);
+    const response = JSON.stringify(result);
+    const persisted = db.serialize().toString("utf8");
+    expect(persisted).toContain("No, keep the existing approach.");
+    for (const fragment of ["SYNTHETIC_PEM_BODY", "UNFINISHED_PEM_BODY", "-----BEGIN", "-----END"]) {
+      expect(response).not.toContain(fragment);
+      expect(persisted).not.toContain(fragment);
+    }
+  });
+
   it("projects only per-node evidence from mixed and legacy shared sources", async () => {
     for (const kind of ["conversation", "legacy"]) {
       const source = createSource(db, { kind, title: "LOCAL_PRIVATE_FRAGMENT", external_id: "LOCAL_PRIVATE_FRAGMENT",
