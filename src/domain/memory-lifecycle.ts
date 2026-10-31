@@ -8,6 +8,7 @@ import { getMemory } from "./nodes.js";
 import { archiveProfileForMemory, synchronizeProfileForMemory } from "./profile.js";
 import { assertSafeForStorage, redactSecrets, replacementMetadata, protectHistoricalValue } from "./privacy.js";
 import { scopeSqlParts } from "./scope.js";
+import { hasAttestedNodeEvidence } from "./sources.js";
 import type {
   MemoryFeedback,
   MemoryNode,
@@ -325,19 +326,29 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
 
     for (const sourceId of sourceIds) {
       // Legacy evidence can duplicate a complete shared conversation. Rebuild
-      // contaminated surviving links from their independent owner's value.
+      // contaminated surviving links only when the quote lacks valid provenance.
+      const evidenceRows = db.prepare("SELECT node_id, evidence_text FROM node_sources WHERE source_id = ?")
+        .all(sourceId) as Array<{ node_id: string; evidence_text: string | null }>;
+      for (const row of evidenceRows) {
+        if (hasAttestedNodeEvidence(db, row.node_id, sourceId, row.evidence_text)) continue;
+        const evidence = row.evidence_text;
+        if (evidence && [...forgottenValues].some((value) => evidence.includes(value))) {
+          db.prepare(`UPDATE node_sources SET evidence_text = (SELECT content FROM nodes WHERE id = node_id)
+            WHERE node_id = ? AND source_id = ?`).run(row.node_id, sourceId);
+        }
+      }
       for (const value of forgottenValues) {
-        db.prepare(`UPDATE node_sources SET evidence_text = (SELECT content FROM nodes WHERE id = node_id)
-          WHERE source_id = ? AND instr(evidence_text, ?) > 0`).run(sourceId, value);
         db.prepare(`UPDATE profile_slot_sources SET evidence_text = (SELECT content FROM profile_slots WHERE id = slot_id)
           WHERE source_id = ? AND evidence_text != ? AND instr(evidence_text, ?) > 0`).run(sourceId, tombstone, value);
       }
-      const remaining = db.prepare(`SELECT ns.evidence_text FROM node_sources ns JOIN nodes n ON n.id = ns.node_id
+      const remaining = db.prepare(`SELECT ns.node_id, ns.evidence_text FROM node_sources ns JOIN nodes n ON n.id = ns.node_id
         WHERE ns.source_id = ? AND n.status != 'deleted'
-        UNION ALL SELECT pss.evidence_text FROM profile_slot_sources pss JOIN profile_slots ps ON ps.id = pss.slot_id
-        WHERE pss.source_id = ? AND ps.status != 'deleted'`).all(sourceId, sourceId) as Array<{ evidence_text: string | null }>;
-      const retained = remaining.map((row) => row.evidence_text).filter((value): value is string =>
-        Boolean(value && value !== tombstone && ![...forgottenValues].some((forgotten) => value.includes(forgotten))));
+        UNION ALL SELECT NULL, pss.evidence_text FROM profile_slot_sources pss JOIN profile_slots ps ON ps.id = pss.slot_id
+        WHERE pss.source_id = ? AND ps.status != 'deleted'`).all(sourceId, sourceId) as Array<{ node_id: string | null; evidence_text: string | null }>;
+      const retained = remaining.filter((row) => (row.node_id !== null
+        && hasAttestedNodeEvidence(db, row.node_id, sourceId, row.evidence_text))
+        || ![...forgottenValues].some((forgotten) => row.evidence_text?.includes(forgotten)))
+        .map((row) => row.evidence_text).filter((value): value is string => Boolean(value && value !== tombstone));
       db.prepare(
         `UPDATE sources
          SET external_id = NULL, title = ?, content_excerpt = ?, metadata_json = '{}'

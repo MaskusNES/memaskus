@@ -433,6 +433,39 @@ describe("technical audit regressions", () => {
     expect(JSON.stringify(db.prepare("SELECT * FROM node_sources").all())).not.toContain(forgotten.content);
   });
 
+  it.each(["valid", "missing", "stale"])("forget preserves overlapping independent evidence only with valid provenance (%s)", async (provenance) => {
+    const quote = "We use TypeScript for the independent build tooling.";
+    const independent = memory("The build tooling uses a typed language.", {
+      source: { kind: "conversation", content_excerpt: quote }
+    });
+    const evidenceRow = () => db.prepare("SELECT * FROM node_sources WHERE node_id = ?").get(independent.id);
+    const provenanceRow = () => db.prepare("SELECT * FROM node_source_provenance WHERE node_id = ?").get(independent.id);
+    const sourceId = (evidenceRow() as { source_id: string }).source_id;
+    if (provenance === "missing") db.prepare("DELETE FROM node_source_provenance WHERE node_id = ?").run(independent.id);
+    if (provenance === "stale") db.prepare("UPDATE node_source_provenance SET evidence_digest = 'stale' WHERE node_id = ?").run(independent.id);
+    const beforeEvidence = evidenceRow();
+    const beforeProvenance = provenanceRow();
+
+    const forgotten = memory("TypeScript", { type: "Preference" });
+    db.prepare("INSERT INTO node_sources VALUES (?, ?, ?, ?)").run(forgotten.id, sourceId, forgotten.content, forgotten.created_at);
+    const slot = applyMemoryToProfile(db, forgotten)!;
+    // The source is reachable from the forgotten memory only through profile history.
+    db.prepare("DELETE FROM node_sources WHERE node_id = ?").run(forgotten.id);
+    expect(db.prepare("SELECT source_id FROM profile_slot_revisions WHERE slot_id = ? AND memory_id = ?")
+      .get(slot.id, forgotten.id)).toEqual({ source_id: sourceId });
+
+    await send("DELETE", `/v1/memories/${forgotten.id}`);
+    const expected = provenance === "valid" ? quote : independent.content;
+    expect(evidenceRow()).toMatchObject({ evidence_text: expected });
+    if (provenance === "valid") expect(evidenceRow()).toEqual(beforeEvidence);
+    expect(provenanceRow()).toEqual(beforeProvenance);
+    expect(getMemory(db, independent.id)).toEqual(independent);
+    const explain = await send("GET", `/v1/memories/${independent.id}/explain`);
+    expect(explain.evidence).toEqual([{ source_id: sourceId, evidence_text: expected }]);
+    expect(explain.sources[0].content_excerpt).toBe(expected);
+    expect(db.prepare("SELECT content_excerpt FROM sources WHERE id = ?").get(sourceId)).toEqual({ content_excerpt: expected });
+  });
+
   it.each(["patch", "archive", "delete"])("%s of a previous owner preserves its replacement slot", async (operation) => {
     const m1 = memory("FORMER_OWNER_VALUE", { type: "Preference", metadata: { profile_sub_topic: "same" } });
     const slot = applyMemoryToProfile(db, m1)!;

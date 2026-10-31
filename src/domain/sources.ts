@@ -83,9 +83,13 @@ export function attestNodeEvidence(db: MemoryDb, nodeId: string, sourceId: strin
     .run(nodeId, sourceId, createHash("sha256").update(row.evidence_text).digest("hex"), originatingCandidateId ?? null);
 }
 
-export function sourceEvidenceForNode(db: MemoryDb, nodeId: string, sourceId: string, evidence: string | null): string | null {
+export function hasAttestedNodeEvidence(db: MemoryDb, nodeId: string, sourceId: string, evidence: string | null): boolean {
   const provenance = db.prepare("SELECT evidence_digest FROM node_source_provenance WHERE node_id = ? AND source_id = ?").get(nodeId, sourceId) as { evidence_digest: string } | undefined;
-  if (evidence !== null && provenance?.evidence_digest === createHash("sha256").update(evidence).digest("hex")) return evidence;
+  return evidence !== null && provenance?.evidence_digest === createHash("sha256").update(evidence).digest("hex");
+}
+
+export function sourceEvidenceForNode(db: MemoryDb, nodeId: string, sourceId: string, evidence: string | null): string | null {
+  if (hasAttestedNodeEvidence(db, nodeId, sourceId, evidence)) return evidence;
   // Legacy shared transcripts have no trustworthy per-node attribution.
   if (!hasOtherSourceOwners(db, nodeId, sourceId)) return evidence;
   const node = db.prepare("SELECT content FROM nodes WHERE id = ?").get(nodeId) as { content: string };
