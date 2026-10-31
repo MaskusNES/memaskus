@@ -138,3 +138,12 @@ export function listSourceEvidenceForNode(
     .all(nodeId) as Array<{ source_id: string; evidence_text: string | null }>;
   return rows.map((row) => ({ ...row, evidence_text: sourceEvidenceForNode(db, nodeId, row.source_id, row.evidence_text) }));
 }
+
+// Ownership and quote integrity are engine-controlled; caller metadata is never proof.
+export function profileEvidenceProvenance(db: MemoryDb, slotId: string, sourceId: string, evidence: string | null):
+  { memory_id: string | null; candidate_id: string | null } | undefined {
+  const row = db.prepare(`SELECT evidence_digest, memory_id, candidate_id FROM profile_source_provenance
+    WHERE slot_id = ? AND source_id = ?`).get(slotId, sourceId) as
+    { evidence_digest: string; memory_id: string | null; candidate_id: string | null } | undefined;
+  return evidence !== null && row?.evidence_digest === createHash("sha256").update(evidence).digest("hex") ? row : undefined;
+}

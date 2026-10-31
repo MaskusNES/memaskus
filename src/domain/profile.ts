@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { MemoryDb } from "../db/connection.js";
 import { NotFoundError, ValidationError } from "../shared/errors.js";
 import { newId } from "../shared/ids.js";
@@ -284,16 +285,21 @@ function insertRevision(
 
 function addSlotSource(
   db: MemoryDb,
-  input: { slot_id: string; source_id?: string; evidence_text?: string }
+  input: { slot_id: string; source_id?: string; evidence_text?: string; memory_id?: string; candidate_id?: string }
 ): void {
   if (!input.source_id) {
     return;
   }
 
-  db.prepare(
+  const inserted = db.prepare(
     `INSERT OR IGNORE INTO profile_slot_sources (slot_id, source_id, evidence_text, created_at)
      VALUES (?, ?, ?, ?)`
   ).run(input.slot_id, input.source_id, input.evidence_text ? redactSecrets(input.evidence_text) : null, nowIso());
+  if (inserted.changes && input.evidence_text && (input.memory_id || input.candidate_id)) {
+    db.prepare(`INSERT INTO profile_source_provenance (slot_id, source_id, evidence_digest, memory_id, candidate_id)
+      VALUES (?, ?, ?, ?, ?)`).run(input.slot_id, input.source_id,
+        createHash("sha256").update(redactSecrets(input.evidence_text)).digest("hex"), input.memory_id ?? null, input.candidate_id ?? null);
+  }
 }
 
 function strongestPrivacy(left: PrivacyLevel, right: PrivacyLevel | undefined): PrivacyLevel {
@@ -394,13 +400,13 @@ export function upsertProfileSlot(db: MemoryDb, input: UpsertProfileSlotInput): 
         memory_id: input.memory_id,
         source_id: input.source_id
       });
-      addSlotSource(db, { slot_id: slot.id, source_id: input.source_id, evidence_text: input.evidence_text });
+      addSlotSource(db, { ...input, slot_id: slot.id });
       result = slot;
       return;
     }
 
     const acceptsReplacement = input.force_replace || input.content === existing.content || confidence >= existing.confidence;
-    result = patchProfileSlot(db, existing.id, {
+    result = patchProfileSlotInternal(db, existing.id, {
       content: acceptsReplacement ? input.content : existing.content,
       confidence: acceptsReplacement ? Math.max(existing.confidence, confidence) : existing.confidence,
       privacy_level: strongestPrivacy(existing.privacy_level, input.privacy_level),
@@ -413,7 +419,7 @@ export function upsertProfileSlot(db: MemoryDb, input: UpsertProfileSlotInput): 
       // of the retained value (or make forgetting its author erase that value).
       memory_id: acceptsReplacement ? input.memory_id : undefined,
       reason: input.reason ?? "profile slot updated from new evidence"
-    });
+    }, input.memory_id);
   });
 
   transaction();
@@ -435,7 +441,7 @@ export function patchProfileSlot(db: MemoryDb, id: string, input: PatchProfileSl
   return db.transaction(() => patchProfileSlotInternal(db, id, input))();
 }
 
-function patchProfileSlotInternal(db: MemoryDb, id: string, input: PatchProfileSlotInput): ProfileSlot {
+function patchProfileSlotInternal(db: MemoryDb, id: string, input: PatchProfileSlotInput, evidenceMemoryId = input.memory_id): ProfileSlot {
   validateReferences(db, input);
   const existing = getProfileSlot(db, id);
   if (existing.status !== "active") {
@@ -485,7 +491,7 @@ function patchProfileSlotInternal(db: MemoryDb, id: string, input: PatchProfileS
   }
 
   protectHistoricalValue(db, "profile_slot_revisions", id, existing.content, nextPrivacyLevel);
-  addSlotSource(db, { slot_id: id, source_id: input.source_id, evidence_text: input.evidence_text });
+  addSlotSource(db, { ...input, slot_id: id, memory_id: evidenceMemoryId });
   return getProfileSlot(db, id);
 }
 

@@ -8,7 +8,7 @@ import { getMemory } from "./nodes.js";
 import { archiveProfileForMemory, synchronizeProfileForMemory } from "./profile.js";
 import { assertSafeForStorage, redactSecrets, replacementMetadata, protectHistoricalValue } from "./privacy.js";
 import { scopeSqlParts } from "./scope.js";
-import { hasAttestedNodeEvidence } from "./sources.js";
+import { hasAttestedNodeEvidence, profileEvidenceProvenance } from "./sources.js";
 import type {
   MemoryFeedback,
   MemoryNode,
@@ -236,8 +236,20 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
       (db.prepare("SELECT content FROM candidates WHERE id = ?").get(row.id) as { content: string }).content)]);
     const historical = db.prepare("SELECT previous_content, next_content FROM memory_revisions WHERE memory_id = ?").all(id) as Array<{ previous_content: string | null; next_content: string }>;
     historical.forEach((revision) => { if (revision.previous_content) forgottenValues.add(revision.previous_content); forgottenValues.add(revision.next_content); });
-    const sourceRows = db.prepare("SELECT source_id FROM node_sources WHERE node_id = ?").all(id) as Array<{ source_id: string }>;
+    const sourceRows = db.prepare("SELECT source_id, evidence_text FROM node_sources WHERE node_id = ?").all(id) as Array<{ source_id: string; evidence_text: string | null }>;
+    for (const row of sourceRows) {
+      if (row.evidence_text && hasAttestedNodeEvidence(db, id, row.source_id, row.evidence_text)) forgottenValues.add(row.evidence_text);
+    }
+    const profileSources = db.prepare(`SELECT pss.slot_id, pss.source_id, pss.evidence_text
+      FROM profile_slot_sources pss JOIN profile_source_provenance p
+        ON p.slot_id = pss.slot_id AND p.source_id = pss.source_id
+      WHERE p.memory_id = ? OR p.candidate_id IN (${candidateIds.length ? candidateIds.map(() => "?").join(",") : "NULL"})`)
+      .all(id, ...candidateIds) as Array<{ slot_id: string; source_id: string; evidence_text: string | null }>;
+    for (const row of profileSources) {
+      if (row.evidence_text && profileEvidenceProvenance(db, row.slot_id, row.source_id, row.evidence_text)) forgottenValues.add(row.evidence_text);
+    }
     const sourceIds = new Set([
+      ...profileSources.map((row) => row.source_id),
       ...sourceRows.map((row) => row.source_id),
       ...candidateRows.flatMap((row) => (row.source_id ? [row.source_id] : []))
     ]);
@@ -281,47 +293,53 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
     for (const slot of slotRows) {
       // NULL memory_id in legacy manual revisions inherits the preceding owner.
       // On replacement, previous_content still belongs to the outgoing owner.
-      const revisions = db.prepare(`SELECT memory_id, previous_content, next_content
+      const revisions = db.prepare(`SELECT id, memory_id, candidate_id, source_id, previous_content, next_content, reason
         FROM profile_slot_revisions WHERE slot_id = ? ORDER BY rowid`)
-        .all(slot.id) as Array<{ memory_id: string | null; previous_content: string | null; next_content: string }>;
+        .all(slot.id) as Array<{ id: string; memory_id: string | null; candidate_id: string | null;
+          source_id: string | null; previous_content: string | null; next_content: string; reason: string | null }>;
       let owner: string | null = null;
+      const forgottenOwner = (value: string | null) => value === id || (value !== null && candidateIds.includes(value));
       for (const revision of revisions) {
-        if (owner === id && revision.previous_content) forgottenValues.add(revision.previous_content);
-        owner = revision.memory_id ?? owner;
-        if (owner === id) forgottenValues.add(revision.next_content);
+        const previousOwned = forgottenOwner(owner);
+        // Legacy manual edits inherit the preceding owner. The incoming source
+        // alone does not transfer ownership (it may be rejected weaker evidence).
+        owner = revision.memory_id ?? revision.candidate_id ?? owner;
+        const nextOwned = forgottenOwner(owner);
+        if (previousOwned && revision.previous_content) forgottenValues.add(revision.previous_content);
+        if (nextOwned) forgottenValues.add(revision.next_content);
+        if (previousOwned || nextOwned) {
+          db.prepare(`UPDATE profile_slot_revisions SET previous_content = ?, next_content = ?, reason = ? WHERE id = ?`)
+            .run(previousOwned && revision.previous_content !== null ? tombstone : revision.previous_content,
+              nextOwned ? tombstone : revision.next_content, nextOwned ? tombstone : revision.reason, revision.id);
+        }
+        if ((revision.memory_id === id || (revision.candidate_id && candidateIds.includes(revision.candidate_id))) && revision.source_id) {
+          sourceIds.add(revision.source_id);
+        }
       }
-      const historicalSources = db.prepare("SELECT source_id FROM profile_slot_revisions WHERE slot_id = ? AND memory_id = ? AND source_id IS NOT NULL")
-        .all(slot.id, id) as Array<{ source_id: string }>;
-      historicalSources.forEach((row) => sourceIds.add(row.source_id));
-      for (const value of forgottenValues) {
-        db.prepare("UPDATE profile_slot_revisions SET previous_content = ?, reason = ? WHERE slot_id = ? AND previous_content = ?").run(tombstone, tombstone, slot.id, value);
-        db.prepare("UPDATE profile_slot_revisions SET next_content = ?, reason = ? WHERE slot_id = ? AND next_content = ?").run(tombstone, tombstone, slot.id, value);
-        db.prepare("UPDATE profile_slot_sources SET evidence_text = ? WHERE slot_id = ? AND evidence_text = ?").run(tombstone, slot.id, value);
+      const evidenceRows = db.prepare("SELECT source_id, evidence_text FROM profile_slot_sources WHERE slot_id = ?")
+        .all(slot.id) as Array<{ source_id: string; evidence_text: string | null }>;
+      for (const row of evidenceRows) {
+        const provenance = profileEvidenceProvenance(db, slot.id, row.source_id, row.evidence_text);
+        const owned = provenance
+          ? provenance.memory_id === id || (provenance.candidate_id !== null && candidateIds.includes(provenance.candidate_id))
+          : revisions.some((r) => r.source_id === row.source_id &&
+              (r.memory_id === id || (r.candidate_id !== null && candidateIds.includes(r.candidate_id)))) &&
+            !revisions.some((r) => r.source_id === row.source_id && r.memory_id !== null && r.memory_id !== id);
+        if (owned) {
+          if (provenance && row.evidence_text) forgottenValues.add(row.evidence_text);
+          sourceIds.add(row.source_id);
+          db.prepare("UPDATE profile_slot_sources SET evidence_text = ? WHERE slot_id = ? AND source_id = ?")
+            .run(tombstone, slot.id, row.source_id);
+        }
       }
       const current = db.prepare("SELECT metadata_json FROM profile_slots WHERE id = ?").get(slot.id) as { metadata_json: string };
-      if (JSON.parse(current.metadata_json).source_memory_id !== id) {
-        db.prepare(`UPDATE profile_slot_revisions SET previous_content = ?, next_content = ?, reason = ?
-          WHERE slot_id = ? AND memory_id = ?`).run(tombstone, tombstone, tombstone, slot.id, id);
-        continue;
-      }
-      const slotSourceRows = db
-        .prepare("SELECT source_id FROM profile_slot_sources WHERE slot_id = ?")
-        .all(slot.id) as Array<{ source_id: string }>;
-      for (const row of slotSourceRows) {
-        sourceIds.add(row.source_id);
-      }
+      if (JSON.parse(current.metadata_json).source_memory_id !== id) continue;
       db.prepare(
         `UPDATE profile_slots
          SET topic = 'deleted', sub_topic = 'memory', content = ?, status = 'deleted',
              metadata_json = '{}', updated_at = ?
          WHERE id = ?`
       ).run(tombstone, now, slot.id);
-      db.prepare("UPDATE profile_slot_sources SET evidence_text = ? WHERE slot_id = ?").run(tombstone, slot.id);
-      db.prepare(
-        `UPDATE profile_slot_revisions
-         SET previous_content = ?, next_content = ?, reason = ?
-         WHERE slot_id = ?`
-      ).run(tombstone, tombstone, tombstone, slot.id);
     }
 
     for (const sourceId of sourceIds) {
@@ -337,16 +355,31 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
             WHERE node_id = ? AND source_id = ?`).run(row.node_id, sourceId);
         }
       }
-      for (const value of forgottenValues) {
-        db.prepare(`UPDATE profile_slot_sources SET evidence_text = (SELECT content FROM profile_slots WHERE id = slot_id)
-          WHERE source_id = ? AND evidence_text != ? AND instr(evidence_text, ?) > 0`).run(sourceId, tombstone, value);
+      const profileEvidence = db.prepare("SELECT slot_id, evidence_text FROM profile_slot_sources WHERE source_id = ?")
+        .all(sourceId) as Array<{ slot_id: string; evidence_text: string | null }>;
+      for (const row of profileEvidence) {
+        const provenance = profileEvidenceProvenance(db, row.slot_id, sourceId, row.evidence_text);
+        if (provenance) {
+          if (provenance.memory_id === id || (provenance.candidate_id !== null && candidateIds.includes(provenance.candidate_id))) {
+            db.prepare("UPDATE profile_slot_sources SET evidence_text = ? WHERE slot_id = ? AND source_id = ?")
+              .run(tombstone, row.slot_id, sourceId);
+          }
+          continue;
+        }
+        if (row.evidence_text !== tombstone && [...forgottenValues].some((value) => row.evidence_text?.includes(value))) {
+          db.prepare(`UPDATE profile_slot_sources SET evidence_text = (SELECT content FROM profile_slots WHERE id = slot_id)
+            WHERE slot_id = ? AND source_id = ?`).run(row.slot_id, sourceId);
+        }
       }
-      const remaining = db.prepare(`SELECT ns.node_id, ns.evidence_text FROM node_sources ns JOIN nodes n ON n.id = ns.node_id
+      const remaining = db.prepare(`SELECT ns.node_id, NULL AS slot_id, NULL AS slot_status, ns.evidence_text FROM node_sources ns JOIN nodes n ON n.id = ns.node_id
         WHERE ns.source_id = ? AND n.status != 'deleted'
-        UNION ALL SELECT NULL, pss.evidence_text FROM profile_slot_sources pss JOIN profile_slots ps ON ps.id = pss.slot_id
-        WHERE pss.source_id = ? AND ps.status != 'deleted'`).all(sourceId, sourceId) as Array<{ node_id: string | null; evidence_text: string | null }>;
-      const retained = remaining.filter((row) => (row.node_id !== null
+        UNION ALL SELECT NULL, pss.slot_id, ps.status AS slot_status, pss.evidence_text FROM profile_slot_sources pss JOIN profile_slots ps ON ps.id = pss.slot_id
+        WHERE pss.source_id = ?`).all(sourceId, sourceId) as Array<{ node_id: string | null; slot_id: string | null; slot_status: string | null; evidence_text: string | null }>;
+      const retained = remaining.filter((row) => row.slot_status !== "deleted" ||
+        (row.slot_id !== null && profileEvidenceProvenance(db, row.slot_id, sourceId, row.evidence_text)))
+        .filter((row) => (row.node_id !== null
         && hasAttestedNodeEvidence(db, row.node_id, sourceId, row.evidence_text))
+        || (row.slot_id !== null && profileEvidenceProvenance(db, row.slot_id, sourceId, row.evidence_text))
         || ![...forgottenValues].some((forgotten) => row.evidence_text?.includes(forgotten)))
         .map((row) => row.evidence_text).filter((value): value is string => Boolean(value && value !== tombstone));
       db.prepare(

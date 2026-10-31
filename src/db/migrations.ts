@@ -158,6 +158,17 @@ export function runMigrations(db: MemoryDb, schemaUrl: URL): void {
     )`);
     db.prepare(`INSERT OR IGNORE INTO schema_migrations (version, name, applied_at)
       VALUES (7, 'additive engine-bound evidence provenance with v5 compatibility', ?)`).run(nowIso());
+    db.exec(`CREATE TABLE IF NOT EXISTS profile_source_provenance (
+      slot_id TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      evidence_digest TEXT NOT NULL,
+      memory_id TEXT,
+      candidate_id TEXT,
+      PRIMARY KEY (slot_id, source_id),
+      FOREIGN KEY (slot_id, source_id) REFERENCES profile_slot_sources(slot_id, source_id) ON DELETE CASCADE
+    )`);
+    db.prepare(`INSERT OR IGNORE INTO schema_migrations (version, name, applied_at)
+      VALUES (8, 'additive profile evidence ownership with v5 compatibility', ?)`).run(nowIso());
     for (const table of ["memory_revisions", "profile_slot_revisions"]) {
       addColumn(db, table, "previous_privacy_level TEXT NOT NULL DEFAULT 'secret'");
       addColumn(db, table, "next_privacy_level TEXT NOT NULL DEFAULT 'secret'");

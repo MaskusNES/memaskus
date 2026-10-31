@@ -360,6 +360,118 @@ describe("technical audit regressions", () => {
     })]));
   });
 
+  it.each([false, true])("preserves each independent revision side with identical values (delete current=%s)", async (deleteCurrent) => {
+    const content = "Independent identical preference";
+    const metadata = { profile_sub_topic: "identical-owner" };
+    const m1 = await send("POST", "/v1/memories", { type: "Preference", content, scope: qa, confidence: 0.6,
+      metadata, source: { kind: "manual", content_excerpt: "First owner's exact quote" } }, 201);
+    const m2 = await send("POST", "/v1/memories", { type: "Preference", content, scope: qa, confidence: 0.95,
+      metadata, source: { kind: "manual", content_excerpt: "Second owner's exact quote" } }, 201);
+    expect(m2.id).not.toBe(m1.id);
+    const slot = listProfileSlots(db, { project_id: qa.project_id })[0];
+    const revisions = () => db.prepare("SELECT * FROM profile_slot_revisions WHERE slot_id = ? ORDER BY rowid").all(slot.id) as
+      Array<{ id: string; previous_content: string | null; next_content: string; memory_id: string; reason: string | null }>;
+    const before = revisions();
+    expect(before).toHaveLength(2);
+    expect(before.map((r) => [r.memory_id, r.previous_content, r.next_content])).toEqual([
+      [m1.id, null, content], [m2.id, content, content]
+    ]);
+    const survivor = deleteCurrent ? m1 : m2;
+    const forgotten = deleteCurrent ? m2 : m1;
+    const source = listSourcesForNode(db, survivor.id)[0];
+    const evidenceBefore = db.prepare("SELECT * FROM profile_slot_sources WHERE slot_id = ? AND source_id = ?").get(slot.id, source.id);
+    const explainBefore = await send("GET", `/v1/memories/${survivor.id}/explain`);
+    await send("DELETE", `/v1/memories/${forgotten.id}`);
+    const after = revisions();
+    expect(after).toHaveLength(before.length);
+    for (let i = 0; i < after.length; i++) {
+      const { previous_content: _oldPrevious, next_content: _oldNext, reason: _oldReason, ...oldFields } = before[i];
+      const { previous_content: _newPrevious, next_content: _newNext, reason, ...newFields } = after[i];
+      expect(newFields).toEqual(oldFields);
+      expect(reason).toBe(after[i].memory_id === forgotten.id ? "[deleted by user]" : before[i].reason);
+    }
+    expect(after.map((r) => [r.previous_content, r.next_content])).toEqual(deleteCurrent
+      ? [[null, content], [content, "[deleted by user]"]]
+      : [[null, "[deleted by user]"], ["[deleted by user]", content]]);
+    expect(db.prepare("SELECT * FROM profile_slot_sources WHERE slot_id = ? AND source_id = ?").get(slot.id, source.id)).toEqual(evidenceBefore);
+    const details = await send("GET", `/v1/profile/slots/${slot.id}`);
+    for (const r of after) expect(details.revisions).toContainEqual(expect.objectContaining({
+      id: r.id, previous_content: r.previous_content, next_content: r.next_content
+    }));
+    const explainAfter = await send("GET", `/v1/memories/${survivor.id}/explain`);
+    expect(explainAfter.evidence).toEqual(explainBefore.evidence);
+    expect(explainAfter.sources).toEqual(explainBefore.sources);
+  });
+
+  it.each(["identical", "identical-current", "overlap", "legacy", "stale", "forged"])("preserves verified independent profile quotes on shared sources (%s)", async (kind) => {
+    const content = "TypeScript";
+    const quote = kind.startsWith("identical") ? content : "TypeScript is preferred for independent tooling." +
+      (["legacy", "stale", "forged"].includes(kind) ? " FORGOTTEN_ONLY_MANUAL_VALUE" : "");
+    const independent = memory("Independent normalized preference", { type: "Preference", metadata: { profile_sub_topic: "independent" } });
+    const slot = applyMemoryToProfile(db, independent)!;
+    const source = createSource(db, { kind: "conversation", content_excerpt: quote });
+    await send("PATCH", `/v1/profile/slots/${slot.id}`, { source_id: source.id, memory_id: independent.id, evidence_text: quote });
+    const evidence = () => db.prepare("SELECT * FROM profile_slot_sources WHERE slot_id = ? AND source_id = ?").get(slot.id, source.id);
+    const before = evidence();
+    if (kind === "legacy" || kind === "forged") db.prepare("DELETE FROM profile_source_provenance WHERE slot_id = ?").run(slot.id);
+    if (kind === "forged") await send("PATCH", `/v1/profile/slots/${slot.id}`, { metadata: {
+      ...slot.metadata, evidence_digest: "forged", memory_id: independent.id, verified: true,
+      profile_source_provenance: { source_id: source.id, memory_id: independent.id, verified: true }
+    } });
+    if (kind === "stale") db.prepare("UPDATE profile_source_provenance SET evidence_digest = 'stale' WHERE slot_id = ?").run(slot.id);
+    const forgotten = memory(content, { type: "Preference", metadata: { profile_sub_topic: kind === "identical-current" ? "independent" : "forgotten" } });
+    db.prepare("INSERT INTO node_sources VALUES (?, ?, ?, ?)").run(forgotten.id, source.id, content, forgotten.created_at);
+    const forgottenSlot = applyMemoryToProfile(db, forgotten, { force_replace: true })!;
+    await send("PATCH", `/v1/profile/slots/${forgottenSlot.id}`, { content: "FORGOTTEN_ONLY_MANUAL_VALUE" });
+    db.prepare("UPDATE profile_slot_revisions SET memory_id = NULL WHERE next_content = 'FORGOTTEN_ONLY_MANUAL_VALUE'").run();
+    await send("DELETE", `/v1/memories/${forgotten.id}`);
+    const expected = ["legacy", "stale", "forged"].includes(kind) ? independent.content : quote;
+    expect(evidence()).toMatchObject({ evidence_text: expected });
+    if (kind.startsWith("identical") || kind === "overlap") expect(evidence()).toEqual(before);
+    expect(db.prepare("SELECT content_excerpt FROM sources WHERE id = ?").get(source.id)).toEqual({ content_excerpt: expected });
+    for (const result of [await send("GET", `/v1/profile/slots/${slot.id}`),
+      await send("GET", `/v1/profile/slots/${forgottenSlot.id}`),
+      await send("GET", `/v1/memories/${forgotten.id}/explain`),
+      await send("GET", "/v1/profile?project_id=project:qa"),
+      await send("POST", "/v1/profile/context", { project_id: qa.project_id })]) {
+      expect(JSON.stringify(result)).not.toContain("FORGOTTEN_ONLY_MANUAL_VALUE");
+    }
+    expect(JSON.stringify(db.prepare("SELECT * FROM profile_slot_revisions").all())).not.toContain("FORGOTTEN_ONLY_MANUAL_VALUE");
+  });
+
+  it("forgets evidence of a weaker author that never owned the retained slot", async () => {
+    const metadata = { profile_sub_topic: "never-owner" };
+    const retained = memory("Independent strong value", { type: "Preference", confidence: 0.95, metadata,
+      source: { kind: "manual", content_excerpt: "Independent exact quote" } });
+    const slot = applyMemoryToProfile(db, retained)!;
+    const rejected = memory("FORGOTTEN_WEAKER_ASSERTION", { type: "Preference", confidence: 0.5, metadata,
+      source: { kind: "manual", content_excerpt: "FORGOTTEN_WEAKER_QUOTE" } });
+    applyMemoryToProfile(db, rejected);
+    const rejectedSource = listSourcesForNode(db, rejected.id)[0];
+    // A different quote from the rejected author must be forgotten even though
+    // revision values are owned entirely by the stronger author.
+    const distinctSource = createSource(db, { kind: "manual" });
+    await send("POST", "/v1/profile/slots", { topic: slot.topic, sub_topic: slot.sub_topic,
+      knowledge_scope: slot.knowledge_scope, project_id: qa.project_id, content: rejected.content,
+      confidence: 0.5, memory_id: rejected.id, source_id: distinctSource.id,
+      evidence_text: "FORGOTTEN_DISTINCT_QUOTE" }, 201);
+    const before = db.prepare("SELECT previous_content,next_content FROM profile_slot_revisions WHERE slot_id = ? ORDER BY rowid").all(slot.id);
+    const independentEvidence = db.prepare("SELECT * FROM profile_slot_sources WHERE slot_id = ? ORDER BY source_id").all(slot.id)
+      .filter((r) => ![rejectedSource.id, distinctSource.id].includes((r as { source_id: string }).source_id));
+    await send("DELETE", `/v1/memories/${rejected.id}`);
+    expect(db.prepare("SELECT previous_content,next_content FROM profile_slot_revisions WHERE slot_id = ? ORDER BY rowid").all(slot.id)).toEqual(before);
+    for (const row of independentEvidence) expect(db.prepare("SELECT * FROM profile_slot_sources WHERE slot_id = ? AND source_id = ?")
+      .get(slot.id, (row as { source_id: string }).source_id)).toEqual(row);
+    expect(db.prepare("SELECT evidence_text FROM profile_slot_sources WHERE slot_id = ? AND source_id = ?")
+      .get(slot.id, distinctSource.id)).toEqual({ evidence_text: "[deleted by user]" });
+    for (const table of ["nodes", "sources", "profile_slots", "profile_slot_sources", "profile_slot_revisions"]) {
+      expect(JSON.stringify(db.prepare(`SELECT * FROM ${table}`).all())).not.toContain("FORGOTTEN_");
+    }
+    const details = await send("GET", `/v1/profile/slots/${slot.id}`);
+    expect(details.slot.content).toBe(retained.content);
+    expect(JSON.stringify(details)).not.toContain("FORGOTTEN_");
+  });
+
   it("forgetting a rejected projection author preserves the replacement owner's history and evidence", async () => {
     const metadata = { profile_sub_topic: "rejected-owner" };
     const m1 = memory("FORMER_REJECTED_VALUE", { type: "Preference", confidence: 0.6, metadata,
@@ -599,6 +711,12 @@ describe("rollback-compatible additive migration", () => {
         VALUES ('legacy','Fact','Legacy value','global',0.8,'active','normal','{}',?,?)`).run(now, now);
       previous.prepare(`INSERT INTO memory_revisions (id,memory_id,previous_content,next_content,next_scope_json,created_at)
         VALUES ('legacy_revision','legacy','Legacy private history','Legacy value','{"kind":"global"}',?)`).run(now);
+      previous.prepare("INSERT INTO users VALUES ('legacy_user',NULL,'{}',?,?)").run(now, now);
+      previous.prepare(`INSERT INTO profile_slots VALUES ('legacy_slot','legacy_user','preferences','legacy',
+        'Legacy profile',0.8,'active','global',NULL,'normal','{}',?,?)`).run(now, now);
+      previous.prepare("INSERT INTO sources VALUES ('legacy_source','manual',NULL,NULL,NULL,'{}',?)").run(now);
+      previous.prepare("INSERT INTO profile_slot_sources VALUES ('legacy_slot','legacy_source','Legacy quote',?)").run(now);
+      const legacyEvidence = previous.prepare("SELECT * FROM profile_slot_sources").all();
       const counts = previous.prepare("SELECT count(*) AS count FROM nodes").get(); previous.close();
       const upgraded = openDatabase(file);
       expect(upgraded.prepare("SELECT count(*) AS count FROM nodes").get()).toEqual(counts);
@@ -608,11 +726,18 @@ describe("rollback-compatible additive migration", () => {
       const bound = createMemory(upgraded, { type: "Fact", content: "New bound value", source: { kind: "manual", content_excerpt: "Bound quote" } });
       expect(upgraded.prepare("SELECT count(*) AS count FROM node_source_provenance").get()).toEqual({ count: 1 });
       expect(upgraded.prepare("SELECT version FROM schema_migrations WHERE version = 7").get()).toBeTruthy();
+      expect(upgraded.prepare("SELECT * FROM profile_slot_sources").all()).toEqual(legacyEvidence);
+      expect(upgraded.prepare("SELECT count(*) AS count FROM profile_source_provenance").get()).toEqual({ count: 0 });
+      const profileMemory = createMemory(upgraded, { type: "Preference", content: "Migrated profile value", source: { kind: "manual" } });
+      const profileSlot = applyMemoryToProfile(upgraded, profileMemory)!;
+      expect(upgraded.prepare("SELECT memory_id FROM profile_source_provenance WHERE slot_id = ?").get(profileSlot.id)).toEqual({ memory_id: profileMemory.id });
+      expect(upgraded.prepare("SELECT version FROM schema_migrations WHERE version = 8").get()).toBeTruthy();
       upgraded.close();
       const rollback = previousOpenDatabase(file);
       expect(rollback.prepare("SELECT content FROM nodes WHERE id='legacy'").get()).toEqual({ content: "Legacy value" });
       expect(rollback.prepare("SELECT count(*) AS count FROM memory_revisions").get()).toEqual({ count: 1 });
       expect(rollback.prepare("SELECT evidence_text FROM node_sources WHERE node_id = ?").get(bound.id)).toEqual({ evidence_text: "Bound quote" });
+      expect(rollback.prepare("SELECT * FROM profile_slot_sources WHERE slot_id = 'legacy_slot'").all()).toEqual(legacyEvidence);
       rollback.close();
       const reopened = openDatabase(file); reopened.close();
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
