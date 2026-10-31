@@ -35,12 +35,40 @@ export function createSource(db: MemoryDb, input: CreateSourceInput): Source {
   return source;
 }
 
-// A source can have owners in all three stores, including profile-only owners.
+// Candidate approval and profile projection create additional links for the
+// same assertion. Exempt only explicit, compatible provenance; an independent
+// owner (even one with identical content) still makes the source ambiguous.
 function hasOtherSourceOwners(db: MemoryDb, nodeId: string, sourceId: string): boolean {
-  return Boolean(db.prepare(`SELECT 1 FROM node_sources WHERE source_id = ? AND node_id != ?
-    UNION ALL SELECT 1 FROM candidates WHERE source_id = ?
-    UNION ALL SELECT 1 FROM profile_slot_sources WHERE source_id = ? LIMIT 1`)
-    .get(sourceId, nodeId, sourceId, sourceId));
+  return Boolean(db.prepare(`WITH node AS (SELECT * FROM nodes WHERE id = @nodeId),
+    origin AS (
+      SELECT c.id FROM candidates c, node n
+      WHERE c.id = json_extract(n.metadata_json, '$.approved_from_candidate_id')
+        AND c.status = 'approved' AND c.privacy_level = 'normal' AND n.privacy_level = 'normal'
+        AND c.knowledge_scope = n.knowledge_scope AND c.scope_kind = n.scope_kind
+        AND c.scope_user_id IS n.scope_user_id AND c.scope_project_id IS n.scope_project_id
+        AND c.scope_workspace_id IS n.scope_workspace_id AND c.scope_agent_id IS n.scope_agent_id
+        AND c.scope_conversation_id IS n.scope_conversation_id
+    )
+    SELECT 1 FROM node_sources WHERE source_id = @sourceId AND node_id != @nodeId
+    UNION ALL SELECT 1 FROM candidates WHERE source_id = @sourceId AND id NOT IN (SELECT id FROM origin)
+    UNION ALL SELECT 1 FROM profile_slot_sources pss
+      JOIN profile_slots ps ON ps.id = pss.slot_id JOIN node n
+      WHERE pss.source_id = @sourceId AND NOT (
+        n.privacy_level = 'normal' AND ps.privacy_level = 'normal' AND ps.status = 'active'
+        AND ps.knowledge_scope = n.knowledge_scope
+        AND ps.scope_project_id IS CASE WHEN n.knowledge_scope = 'project_local' THEN n.scope_project_id ELSE NULL END
+        AND n.scope_kind IN ('global', 'project', 'user')
+        AND ps.user_id = COALESCE(n.scope_user_id, 'default')
+        AND json_extract(ps.metadata_json, '$.projected_from_memory') IS 1
+        AND json_extract(ps.metadata_json, '$.source_memory_id') IS n.id
+        AND EXISTS (SELECT 1 FROM profile_slot_revisions r
+          WHERE r.slot_id = ps.id AND r.source_id = @sourceId AND r.memory_id = n.id)
+        AND NOT EXISTS (SELECT 1 FROM profile_slot_revisions r WHERE r.slot_id = ps.id
+          AND (r.previous_privacy_level != 'normal' OR r.next_privacy_level != 'normal'
+            OR r.memory_id IS NOT n.id
+            OR (r.source_id = @sourceId AND r.candidate_id IS NOT NULL
+              AND r.candidate_id NOT IN (SELECT id FROM origin))))
+      ) LIMIT 1`).get({ nodeId, sourceId }));
 }
 
 // Legacy node_sources links do not attest that a quote belongs exclusively to

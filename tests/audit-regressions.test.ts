@@ -81,6 +81,77 @@ describe("technical audit regressions", () => {
     }
   });
 
+  it.each([
+    '"password": "synthetic12345678"',
+    'api_key=synthetic12345678',
+    '-----BEGIN PRIVATE KEY-----\nSYNTHETIC_KEY_BODY\n-----END PRIVATE KEY-----',
+    '-----BEGIN PRIVATE KEY-----\nSYNTHETIC_KEY_BODY\nunfinished body'
+  ])("redacts the entire review response after disagreement containing %s", async (secret) => {
+    const result = await send("POST", "/v1/review/conversation", {
+      project_id: "project:qa", analysis_mode: "heuristic",
+      text: `assistant: Try this approach.\nuser: No, this is wrong. ${secret}`
+    }, 201);
+    expect(result.preference_review.disagreements).toHaveLength(1);
+    expect(result.preference_review.clarification_questions).toHaveLength(1);
+    expect(result.preference_review.clarification_questions[0]).toContain("[redacted: credential]");
+    const serialized = JSON.stringify(result);
+    for (const fragment of ["synthetic12345678", "SYNTHETIC_KEY_BODY", "unfinished body", "-----BEGIN", "-----END"]) {
+      expect(serialized).not.toContain(fragment);
+    }
+  });
+
+  it.each([{ kind: "global" as const }, qa])("retains normal Preference source fields through its own projection in %j", async (scope) => {
+    const title = "UniquePreferenceSourceTitle";
+    const quote = "UniquePreferenceQuote: for new projects choose TypeScript";
+    const node = await send("POST", "/v1/memories", { type: "Preference", content: "The user prefers TypeScript",
+      scope, source: { kind: "manual", title, content_excerpt: quote } }, 201);
+    const explanation = await send("GET", `/v1/memories/${node.id}/explain`);
+    expect(explanation.sources[0]).toMatchObject({ title, content_excerpt: quote });
+    expect(explanation.evidence[0].evidence_text).toBe(quote);
+    const recall = await send("POST", "/v1/recall", { query: "TypeScript", scope, include_sources: true });
+    expect(recall.results.find((item: { id: string }) => item.id === node.id).sources[0]).toMatchObject({ title, content_excerpt: quote });
+    for (const q of [title, "UniquePreferenceQuote"]) {
+      const result = await send("GET", `/v1/explorer?${new URLSearchParams({ q, ...(scope.kind === "project" ? { project_id: scope.project_id } : {}) })}`);
+      expect(result.items).toEqual(expect.arrayContaining([expect.objectContaining({
+        kind: "source", id: explanation.sources[0].id, title, content: quote
+      })]));
+    }
+  });
+
+  it("recognizes an approved originating candidate and its own profile projection", async () => {
+    const source = createSource(db, { kind: "manual", title: "ApprovedSourceTitle", content_excerpt: "Approved differing quote" });
+    const item = candidate("The user prefers TypeScript", { type: "Preference", source_id: source.id });
+    const node = await send("POST", `/v1/candidates/${item.id}/approve`, {}, 201);
+    const explanation = await send("GET", `/v1/memories/${node.id}/explain`);
+    expect(explanation.sources[0]).toMatchObject({ title: source.title, content_excerpt: source.content_excerpt });
+    const recall = await send("POST", "/v1/recall", { query: "TypeScript", scope: qa, include_sources: true });
+    expect(recall.results.find((result: { id: string }) => result.id === node.id).sources[0].title).toBe(source.title);
+  });
+
+  it.each(["independent candidate", "candidate privacy", "candidate layer", "candidate scope", "slot provenance", "slot privacy", "slot layer", "slot scope", "slot history"])(
+    "keeps source protection for %s despite originating links", async (owner) => {
+      const hidden = "ProtectedSourceFragment";
+      const source = createSource(db, { kind: "manual", title: hidden, content_excerpt: hidden });
+      const item = candidate("The user prefers TypeScript", { type: "Preference", source_id: source.id });
+      const node = await send("POST", `/v1/candidates/${item.id}/approve`, {}, 201);
+      const slot = listProfileSlots(db, { knowledge_scope: "project_local", project_id: "project:qa" })[0];
+      if (owner === "independent candidate") candidate("Independent assertion", { source_id: source.id });
+      if (owner === "candidate privacy") db.prepare("UPDATE candidates SET privacy_level = 'sensitive' WHERE id = ?").run(item.id);
+      if (owner === "candidate layer") db.prepare("UPDATE candidates SET knowledge_scope = 'global' WHERE id = ?").run(item.id);
+      if (owner === "candidate scope") db.prepare("UPDATE candidates SET scope_project_id = 'project:foreign' WHERE id = ?").run(item.id);
+      if (owner === "slot provenance") db.prepare("UPDATE profile_slots SET metadata_json = '{}' WHERE id = ?").run(slot.id);
+      if (owner === "slot privacy") db.prepare("UPDATE profile_slots SET privacy_level = 'sensitive' WHERE id = ?").run(slot.id);
+      if (owner === "slot layer") db.prepare("UPDATE profile_slots SET knowledge_scope = 'global' WHERE id = ?").run(slot.id);
+      if (owner === "slot scope") db.prepare("UPDATE profile_slots SET scope_project_id = 'project:foreign' WHERE id = ?").run(slot.id);
+      if (owner === "slot history") db.prepare("UPDATE profile_slot_revisions SET previous_privacy_level = 'secret' WHERE slot_id = ?").run(slot.id);
+      for (const response of [await send("GET", `/v1/memories/${node.id}/explain`),
+        await send("POST", "/v1/recall", { query: "TypeScript", scope: qa, include_sources: true })]) {
+        expect(JSON.stringify(response)).not.toContain(hidden);
+      }
+      expect((await send("GET", `/v1/explorer?project_id=project:qa&q=${hidden}`)).items).toEqual([]);
+    }
+  );
+
   it.each(["legacy", "manual"])("conservatively projects a %s source shared only with a protected foreign profile slot", async (kind) => {
     const quote = "For new projects choose TypeScript";
     const hidden = "PROFILE_PRIVATE_FRAGMENT";
