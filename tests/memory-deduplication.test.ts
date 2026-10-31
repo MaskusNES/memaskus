@@ -32,6 +32,89 @@ describe("explicit memory creation deduplication", () => {
     expect(recall.json().results.map((r: { id: string }) => r.id)).toEqual([first.id]);
   });
 
+  it("merges concurrent confidence, exact tags and provenance monotonically", async () => {
+    const responses = await Promise.all([0.7, 0.95, 0.6, undefined].map((confidence, i) => post({
+      confidence, metadata: { knowledge_scope: "project_local", tags: ["a", String(i)] },
+      source: { kind: "manual", title: `source-${i}` }
+    })));
+    expect(responses.filter(r => r.statusCode === 201)).toHaveLength(1);
+    const id = responses[0].json().id;
+    expect(new Set(responses.map(r => r.json().id)).size).toBe(1);
+    const explanation = (await app.inject(`/v1/memories/${id}/explain`)).json();
+    expect(explanation.memory.confidence).toBe(0.95);
+    expect(explanation.memory.metadata.tags).toEqual(["a", "0", "1", "2", "3"]);
+    expect(explanation.sources).toHaveLength(4);
+    expect((await post()).json().memory.confidence).toBe(0.95);
+  });
+
+  it("uses default confidence and merges absent tags as empty with exact string equality", async () => {
+    const first = (await post({ confidence: 0.5 })).json();
+    const next = (await post({ metadata: { tags: ["a", "b"] } })).json();
+    expect(next).toMatchObject({ id: first.id, memory: { confidence: 0.8 } });
+    expect((await post({ metadata: { tags: ["b", "c", "A"] } })).json().memory.metadata.tags).toEqual(["a", "b", "c", "A"]);
+    expect((await post({ metadata: { tags: [] } })).json().id).toBe(first.id);
+  });
+
+  it.each([null, "tag", [1], { nested: ["a"] }, ["a", 1]])("requires deep equality for non-string-array tags %j", async tags => {
+    const first = (await post({ metadata: { tags } })).json();
+    expect((await post({ confidence: 0.95, metadata: { tags } })).json().id).toBe(first.id);
+    expect((await post({ metadata: { tags: [] } })).statusCode).toBe(201);
+    expect((await post({ metadata: { tags: ["a"] } })).json().id).not.toBe(first.id);
+  });
+
+  it.each(["title", "profile_topic", "profile_sub_topic", "extra"])("retains differences in metadata %s", async key => {
+    const first = (await post({ metadata: { [key]: "one" } })).json();
+    const second = await post({ metadata: { [key]: "two" } });
+    expect(second.statusCode).toBe(201);
+    expect(second.json().id).not.toBe(first.id);
+    expect((await post()).statusCode).toBe(201);
+  });
+
+  it("escalates privacy and synchronizes preference confidence without duplicate slots or no-op revisions", async () => {
+    const preference = { type: "Preference", metadata: { profile_topic: "qa", profile_sub_topic: "format" } };
+    const first = (await post({ ...preference, source: { kind: "manual", title: "private-source-marker", content_excerpt: input.content } })).json();
+    for (const privacy_level of ["sensitive", "secret", "normal", "sensitive"]) {
+      const response = await post({ ...preference, confidence: 0.95, privacy_level });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().id).toBe(first.id);
+      const expectedPrivacy = privacy_level === "sensitive" && response.json().memory.privacy_level !== "secret" ? "sensitive" : "secret";
+      expect(response.json().memory.privacy_level).toBe(expectedPrivacy);
+      expect(response.body).not.toContain(input.content);
+      const slots = db.prepare("SELECT confidence, privacy_level FROM profile_slots").all();
+      expect(slots).toEqual([{ confidence: 0.95, privacy_level: expectedPrivacy }]);
+      const responses = await Promise.all([
+        app.inject(`/v1/memories/${first.id}/explain`),
+        app.inject("/v1/memories?scope_kind=project&project_id=project%3Aqa"),
+        app.inject("/v1/profile?knowledge_scope=project_local&project_id=project%3Aqa"),
+        app.inject({ method: "POST", url: "/v1/profile/context", payload: { knowledge_scope: "project_local", project_id: "project:qa" } }),
+        app.inject({ method: "POST", url: "/v1/recall", payload: { query: "Дедупмаркер", scope, knowledge_scope: "project_local" } })
+      ]);
+      for (const result of responses) {
+        expect(result.statusCode).toBe(200);
+        expect(result.body).not.toContain(input.content);
+        expect(result.body).not.toContain("private-source-marker");
+      }
+    }
+    const revisions = db.prepare("SELECT * FROM profile_slot_revisions").all();
+    const slots = db.prepare("SELECT * FROM profile_slots").all();
+    await post({ ...preference, confidence: 0.95 });
+    expect(db.prepare("SELECT * FROM profile_slot_revisions").all()).toEqual(revisions);
+    expect(db.prepare("SELECT * FROM profile_slots").all()).toEqual(slots);
+  });
+
+  it.each(["node_sources", "profile_slots"])("rolls back node, sources and profile when %s fails", async table => {
+    const preference = { type: "Preference" };
+    await post(preference);
+    const tables = ["nodes", "sources", "node_sources", "profile_slots", "profile_slot_revisions"];
+    const snapshot = () => tables.map(name => db.prepare(`SELECT * FROM ${name}`).all());
+    const before = snapshot();
+    db.exec(`CREATE TRIGGER reject_merge ${table === "profile_slots" ? "AFTER UPDATE" : "AFTER INSERT"} ON ${table}
+      BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END`);
+    const response = await post({ ...preference, confidence: 0.95, privacy_level: "secret", metadata: { tags: ["a"] }, source: { kind: "manual" } });
+    expect(response.statusCode).toBe(500);
+    expect(snapshot()).toEqual(before);
+  });
+
   it("normalizes only case, whitespace and one final ASCII period", async () => {
     const first = (await post()).json();
     for (const content of ["ДЕДУПМАРКЕР ХРАНИТ ПАМЯТЬ", "  Дедупмаркер хранит память  ", "Дедупмаркер\n\t хранит   память", "Дедупмаркер хранит память ."]) {
@@ -48,7 +131,7 @@ describe("explicit memory creation deduplication", () => {
   it("compares effective defaults and recursively unordered, sanitized metadata", async () => {
     const first = (await post()).json();
     expect((await post({ confidence: 0.8, privacy_level: "normal", metadata: { knowledge_scope: "project_local" } })).json().id).toBe(first.id);
-    for (const overrides of [{ type: "Decision" }, { confidence: 0.9 }, { privacy_level: "sensitive" }, { metadata: { knowledge_scope: "global" } }, { metadata: { extra: true } }]) {
+    for (const overrides of [{ type: "Decision" }, { metadata: { knowledge_scope: "global" } }, { metadata: { extra: true } }]) {
       expect((await post(overrides)).statusCode).toBe(201);
     }
     const nested = (await post({ metadata: { a: { x: 1, y: [1, 2] }, b: 2, password: "synthetic-value-one" } })).json();
