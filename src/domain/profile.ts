@@ -5,6 +5,8 @@ import { nowIso } from "../shared/time.js";
 import { metadataKnowledgeScope } from "./links.js";
 import {
   assertSafeForStorage,
+  replacementMetadata,
+  protectHistoricalValue,
   publicProfileSlot,
   redactSecrets,
   redactedContent,
@@ -449,9 +451,7 @@ function patchProfileSlotInternal(db: MemoryDb, id: string, input: PatchProfileS
   const nextContent = input.content ?? existing.content;
   const nextConfidence = input.confidence === undefined ? existing.confidence : normalizeConfidence(input.confidence);
   const nextPrivacyLevel = input.privacy_level ?? existing.privacy_level;
-  const nextMetadata = input.metadata
-    ? { ...existing.metadata, ...sanitizeMetadata(input.metadata) }
-    : existing.metadata;
+  const nextMetadata = replacementMetadata(db, existing.metadata, input.metadata, existing.privacy_level !== "normal", nextPrivacyLevel);
   const now = nowIso();
 
   db.prepare(
@@ -484,6 +484,7 @@ function patchProfileSlotInternal(db: MemoryDb, id: string, input: PatchProfileS
     });
   }
 
+  protectHistoricalValue(db, "profile_slot_revisions", id, existing.content, nextPrivacyLevel);
   addSlotSource(db, { slot_id: id, source_id: input.source_id, evidence_text: input.evidence_text });
   return getProfileSlot(db, id);
 }

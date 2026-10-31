@@ -1,3 +1,4 @@
+import type { MemoryDb } from "../db/connection.js";
 import { ValidationError } from "../shared/errors.js";
 import type { Candidate } from "./candidates.js";
 import type { MemoryConflict } from "./review.js";
@@ -167,4 +168,30 @@ export function redactSourcesForMemory(
       : source.content_excerpt,
     metadata: memory.privacy_level === "normal" ? sanitizeMetadata(source.metadata) : {}
   }));
+}
+
+// A downgrade starts a new public metadata payload. Only validated internal
+// identities survive; arbitrary text from the protected payload never does.
+export function replacementMetadata(db: MemoryDb, existing: Record<string, unknown>, supplied: Record<string, unknown> | undefined, wasProtected: boolean, nextPrivacy: MemoryNode["privacy_level"]): Record<string, unknown> {
+  if (!wasProtected || nextPrivacy !== "normal") return { ...existing, ...sanitizeMetadata(supplied) };
+  const retained: Record<string, unknown> = {};
+  if (existing.knowledge_scope === "global" || existing.knowledge_scope === "project_local") retained.knowledge_scope = existing.knowledge_scope;
+  for (const [key, table] of [["source_memory_id", "nodes"], ["approved_from_candidate_id", "candidates"], ["merged_candidate_id", "candidates"]]) {
+    const id = existing[key];
+    if (typeof id === "string" && db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id)) retained[key] = id;
+  }
+  if (retained.source_memory_id && existing.projected_from_memory === true) retained.projected_from_memory = true;
+  return { ...retained, ...sanitizeMetadata(supplied) };
+}
+
+// Reclassification applies to every historical copy of this value, including
+// the escalation revision. Preserve rows and never weaken an earlier label.
+export function protectHistoricalValue(db: MemoryDb, table: "memory_revisions" | "profile_slot_revisions", id: string, value: string, privacy: MemoryNode["privacy_level"]): void {
+  if (privacy === "normal") return;
+  const owner = table === "memory_revisions" ? "memory_id" : "slot_id";
+  for (const side of ["previous", "next"]) {
+    db.prepare(`UPDATE ${table} SET ${side}_privacy_level = ?
+      WHERE ${owner} = ? AND ${side}_content = ?
+      AND (${side}_privacy_level = 'normal' OR (${side}_privacy_level = 'sensitive' AND ? = 'secret'))`).run(privacy, id, value, privacy);
+  }
 }

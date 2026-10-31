@@ -38,6 +38,115 @@ describe("technical audit regressions", () => {
     expect(response.statusCode, response.body).toBe(status); return response.json();
   }
 
+  it.each(["sensitive", "secret"] as const)("drops inherited protected metadata but accepts new public metadata (%s)", async (privacy_level) => {
+    const hidden = "OLD_PROTECTED_METADATA_TEXT";
+    const node = await send("POST", "/v1/memories", { type: "Preference", content: hidden, scope: qa,
+      privacy_level, metadata: { disagreement_text: hidden, nested: { text: hidden } } }, 201);
+    const projected = listProfileSlots(db, { project_id: qa.project_id, knowledge_scope: "project_local" })[0];
+    const standalone = await send("POST", "/v1/profile/slots", { topic: "standalone", content: hidden,
+      privacy_level, knowledge_scope: "project_local", project_id: qa.project_id,
+      metadata: { disagreement_text: hidden, nested: [hidden] } }, 201);
+    for (const [url, supplied] of [[`/v1/memories/${node.id}`, undefined],
+      [`/v1/profile/slots/${standalone.id}`, { disagreement_text: "New permitted metadata" }]] as const) {
+      const response = await send("PATCH", url, { content: "New public value", privacy_level: "normal", ...(supplied ? { metadata: supplied } : {}) });
+      expect(JSON.stringify(response)).not.toContain(hidden);
+    }
+    const details = await send("GET", `/v1/profile/slots/${standalone.id}`);
+    expect(details.slot.metadata.disagreement_text).toBe("New permitted metadata");
+    expect(getProfileSlot(db, projected.id).metadata.source_memory_id).toBe(node.id);
+    for (const result of [await send("GET", `/v1/memories/${node.id}/explain`),
+      await send("GET", `/v1/profile/slots/${projected.id}`), details,
+      await send("GET", "/v1/profile?project_id=project:qa"),
+      await send("POST", "/v1/profile/context", { project_id: qa.project_id })]) {
+      expect(JSON.stringify(result)).not.toContain(hidden);
+    }
+  });
+
+  it.each(["sensitive", "secret"] as const)("reclassifies historical copies without losing rows (%s)", async (privacy_level) => {
+    const hidden = "RECLASSIFIED_ORIGINAL_VALUE";
+    const node = await send("POST", "/v1/memories", { type: "Preference", content: hidden, scope: qa }, 201);
+    const projected = listProfileSlots(db, { project_id: qa.project_id, knowledge_scope: "project_local" })[0];
+    const standalone = await send("POST", "/v1/profile/slots", { topic: "history", content: hidden,
+      knowledge_scope: "project_local", project_id: qa.project_id }, 201);
+    // Create earlier normal revisions containing the value on both sides.
+    await send("PATCH", `/v1/memories/${node.id}`, { confidence: 0.85 });
+    await send("PATCH", `/v1/profile/slots/${standalone.id}`, { reason: "Record evidence" });
+    const snapshot = (table: string) => db.prepare(`SELECT id FROM ${table} ORDER BY id`).all();
+    const before = [snapshot("memory_revisions"), snapshot("profile_slot_revisions")];
+    for (const url of [`/v1/memories/${node.id}`, `/v1/profile/slots/${standalone.id}`]) {
+      await send("PATCH", url, { privacy_level });
+      await send("PATCH", url, { content: "PUBLIC_REPLACEMENT_VALUE", privacy_level: "normal" });
+    }
+    for (const [index, table] of ["memory_revisions", "profile_slot_revisions"].entries()) {
+      expect(snapshot(table)).toEqual(expect.arrayContaining(before[index]));
+      const rows = db.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, unknown>>;
+      for (const row of rows) for (const side of ["previous", "next"]) {
+        if (row[`${side}_content`] === hidden) expect(row[`${side}_privacy_level`]).toBe(privacy_level);
+      }
+    }
+    for (const result of [await send("GET", `/v1/memories/${node.id}/explain`),
+      await send("GET", `/v1/profile/slots/${projected.id}`),
+      await send("GET", `/v1/profile/slots/${standalone.id}`),
+      await send("GET", "/v1/profile?project_id=project:qa"),
+      await send("POST", "/v1/profile/context", { project_id: qa.project_id })]) {
+      expect(JSON.stringify(result)).not.toContain(hidden);
+    }
+  });
+
+  it("never weakens secret historical classifications during later sensitive reclassification", async () => {
+    const node = await send("POST", "/v1/memories", { type: "Preference", content: "Same protected value", scope: qa }, 201);
+    const standalone = await send("POST", "/v1/profile/slots", { topic: "stronger-history", content: "Same protected value" }, 201);
+    for (const url of [`/v1/memories/${node.id}`, `/v1/profile/slots/${standalone.id}`]) {
+      await send("PATCH", url, { privacy_level: "secret", reason: "Classify" });
+      await send("PATCH", url, { privacy_level: "normal", reason: "Temporarily public" });
+    }
+    const snapshots = ["memory_revisions", "profile_slot_revisions"].map((table) =>
+      db.prepare(`SELECT id, previous_privacy_level, next_privacy_level FROM ${table}`).all() as Array<Record<string, string>>);
+    await send("PATCH", `/v1/memories/${node.id}`, { privacy_level: "sensitive" });
+    await send("PATCH", `/v1/profile/slots/${standalone.id}`, { privacy_level: "sensitive" });
+    for (const [index, table] of ["memory_revisions", "profile_slot_revisions"].entries()) {
+      for (const row of snapshots[index]) {
+        const current = db.prepare(`SELECT previous_privacy_level, next_privacy_level FROM ${table} WHERE id = ?`).get(row.id) as Record<string, string>;
+        for (const side of ["previous_privacy_level", "next_privacy_level"]) if (row[side] === "secret") expect(current[side]).toBe("secret");
+      }
+    }
+  });
+
+  it("does not treat user-supplied originating candidate metadata as evidence provenance", async () => {
+    const hidden = "LEGACY_AMBIGUOUS_QUOTE";
+    const source = createSource(db, { kind: "conversation", content_excerpt: hidden });
+    const origin = candidate("Normalized public assertion", { source_id: source.id, status: "approved", scope: { kind: "global" } });
+    const node = memory(origin.content, { scope: { kind: "global" }, metadata: { approved_from_candidate_id: origin.id, evidence_verified: true } });
+    db.prepare("INSERT INTO node_sources VALUES (?, ?, ?, ?)").run(node.id, source.id, hidden, node.created_at);
+    expect((await send("GET", `/v1/memories/${node.id}/explain`)).evidence[0].evidence_text).toBe(node.content);
+    expect(JSON.stringify(await send("GET", `/v1/memories/${node.id}/explain`))).not.toContain(hidden);
+  });
+
+  it.each(["Fact", "Preference"])("retains engine-bound distinct quotes on a mixed source for %s", async (type) => {
+    const quote = "UniquePermittedQuote for TypeScript projects";
+    const hidden = "FOREIGN_PROTECTED_TRANSCRIPT";
+    const node = await send("POST", "/v1/memories", { type, content: "The user chooses TypeScript", scope: { kind: "global" },
+      source: { kind: "conversation", content_excerpt: quote } }, 201);
+    const source = db.prepare("SELECT source_id FROM node_sources WHERE node_id = ?").get(node.id) as { source_id: string };
+    const foreign = memory(hidden, { privacy_level: "secret", scope: { kind: "project", project_id: "project:foreign" } });
+    db.prepare("INSERT INTO node_sources VALUES (?, ?, ?, ?)").run(foreign.id, source.source_id, hidden, foreign.created_at);
+    db.prepare("UPDATE sources SET content_excerpt = ?, title = ?, metadata_json = ? WHERE id = ?")
+      .run(`${quote}; ${hidden}`, hidden, JSON.stringify({ text: hidden }), source.source_id);
+    const explanation = await send("GET", `/v1/memories/${node.id}/explain`);
+    expect(explanation.evidence[0].evidence_text).toBe(quote);
+    expect(explanation.sources[0].content_excerpt).toBe(quote);
+    const recalled = await send("POST", "/v1/recall", { query: "TypeScript", scope: { kind: "global" }, include_sources: true });
+    expect(recalled.results.find((r: { id: string }) => r.id === node.id).sources[0].content_excerpt).toBe(quote);
+    const explorer = await send("GET", "/v1/explorer?q=UniquePermittedQuote");
+    expect(explorer.items).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "source", content: quote })]));
+    expect(JSON.stringify([explanation, recalled, explorer])).not.toContain(hidden);
+    // User metadata cannot attest altered legacy evidence, even if it embeds provenance-shaped fields.
+    db.prepare("UPDATE node_sources SET evidence_text = ? WHERE node_id = ?").run(`${quote}; ${hidden}`, node.id);
+    await send("PATCH", `/v1/memories/${node.id}`, { metadata: { evidence_verified: true, evidence_digest: "forged" } });
+    expect(JSON.stringify(await send("GET", `/v1/memories/${node.id}/explain`))).not.toContain(hidden);
+    expect(db.prepare("SELECT evidence_text FROM node_sources WHERE node_id = ?").get(node.id)).toEqual({ evidence_text: `${quote}; ${hidden}` });
+  });
+
   it("rejects quoted JSON credentials in memories and profile writes; sanitizes sources and public legacy content", async () => {
     for (const key of ["password", "api_key"]) {
       const content = JSON.stringify({ [key]: "synthetic12345678" });
@@ -274,7 +383,9 @@ describe("technical audit regressions", () => {
     expect(db.prepare("SELECT evidence_text FROM profile_slot_sources WHERE slot_id = ? AND source_id = ?").get(slot.id, replacementSource.id))
       .toEqual({ evidence_text: m2.content });
     const explanation = await send("GET", `/v1/memories/${m2.id}/explain`);
-    expect(explanation.evidence[0].evidence_text).toBe(m2.content);
+    // The surviving quote now has engine-bound provenance and remains permitted.
+    expect(explanation.evidence[0].evidence_text).toBe("Independent replacement evidence");
+    expect(JSON.stringify(explanation)).not.toContain(m1.content);
     expect(db.prepare("SELECT evidence_text FROM node_sources WHERE node_id = ? AND source_id = ?").get(m2.id, replacementSource.id))
       .toEqual({ evidence_text: "Independent replacement evidence" });
   });
@@ -461,10 +572,14 @@ describe("rollback-compatible additive migration", () => {
       expect(upgraded.prepare("SELECT previous_privacy_level,next_privacy_level FROM memory_revisions").get()).toEqual({ previous_privacy_level: "secret", next_privacy_level: "secret" });
       expect(upgraded.pragma("user_version", { simple: true })).toBe(5);
       expect(upgraded.prepare("SELECT version FROM schema_migrations WHERE version = 6").get()).toBeTruthy();
+      const bound = createMemory(upgraded, { type: "Fact", content: "New bound value", source: { kind: "manual", content_excerpt: "Bound quote" } });
+      expect(upgraded.prepare("SELECT count(*) AS count FROM node_source_provenance").get()).toEqual({ count: 1 });
+      expect(upgraded.prepare("SELECT version FROM schema_migrations WHERE version = 7").get()).toBeTruthy();
       upgraded.close();
       const rollback = previousOpenDatabase(file);
       expect(rollback.prepare("SELECT content FROM nodes WHERE id='legacy'").get()).toEqual({ content: "Legacy value" });
       expect(rollback.prepare("SELECT count(*) AS count FROM memory_revisions").get()).toEqual({ count: 1 });
+      expect(rollback.prepare("SELECT evidence_text FROM node_sources WHERE node_id = ?").get(bound.id)).toEqual({ evidence_text: "Bound quote" });
       rollback.close();
       const reopened = openDatabase(file); reopened.close();
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }

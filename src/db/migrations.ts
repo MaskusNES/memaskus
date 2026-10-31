@@ -148,6 +148,16 @@ export function runMigrations(db: MemoryDb, schemaUrl: URL): void {
   // Additive extensions deliberately retain the v5 compatibility floor: the
   // previous loader rejects a higher user_version, but tolerates extra columns.
   db.transaction(() => {
+    db.exec(`CREATE TABLE IF NOT EXISTS node_source_provenance (
+      node_id TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      evidence_digest TEXT NOT NULL,
+      originating_candidate_id TEXT,
+      PRIMARY KEY (node_id, source_id),
+      FOREIGN KEY (node_id, source_id) REFERENCES node_sources(node_id, source_id) ON DELETE CASCADE
+    )`);
+    db.prepare(`INSERT OR IGNORE INTO schema_migrations (version, name, applied_at)
+      VALUES (7, 'additive engine-bound evidence provenance with v5 compatibility', ?)`).run(nowIso());
     for (const table of ["memory_revisions", "profile_slot_revisions"]) {
       addColumn(db, table, "previous_privacy_level TEXT NOT NULL DEFAULT 'secret'");
       addColumn(db, table, "next_privacy_level TEXT NOT NULL DEFAULT 'secret'");

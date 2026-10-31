@@ -6,7 +6,7 @@ import { mapNode } from "./mappers.js";
 import { linkScopesCompatible, metadataKnowledgeScope } from "./links.js";
 import { getMemory } from "./nodes.js";
 import { archiveProfileForMemory, synchronizeProfileForMemory } from "./profile.js";
-import { assertSafeForStorage, redactSecrets, sanitizeMetadata } from "./privacy.js";
+import { assertSafeForStorage, redactSecrets, replacementMetadata, protectHistoricalValue } from "./privacy.js";
 import { scopeSqlParts } from "./scope.js";
 import type {
   MemoryFeedback,
@@ -155,9 +155,7 @@ export function updateMemory(db: MemoryDb, id: string, input: UpdateMemoryInput)
   }
   const nextContent = input.content ?? existing.content;
   const nextScope = input.scope ?? existing.scope;
-  const nextMetadata = input.metadata
-    ? { ...existing.metadata, ...sanitizeMetadata(input.metadata) }
-    : existing.metadata;
+  const nextMetadata = replacementMetadata(db, existing.metadata, input.metadata, existing.privacy_level !== "normal", input.privacy_level ?? existing.privacy_level);
   const nextKnowledgeScope = metadataKnowledgeScope(nextMetadata, nextScope);
   nextMetadata.knowledge_scope = nextKnowledgeScope;
   const now = nowIso();
@@ -172,6 +170,7 @@ export function updateMemory(db: MemoryDb, id: string, input: UpdateMemoryInput)
       }
     }
     insertRevision(db, existing, { content: nextContent, scope: nextScope, privacy_level: input.privacy_level ?? existing.privacy_level }, input.reason ?? "memory corrected");
+    protectHistoricalValue(db, "memory_revisions", id, existing.content, input.privacy_level ?? existing.privacy_level);
     db.prepare(
       `UPDATE nodes SET
          content = ?, scope_kind = ?, scope_user_id = ?, scope_project_id = ?,

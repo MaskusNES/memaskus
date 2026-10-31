@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { MemoryDb } from "../db/connection.js";
 import { newId } from "../shared/ids.js";
 import { nowIso } from "../shared/time.js";
@@ -42,7 +43,9 @@ function hasOtherSourceOwners(db: MemoryDb, nodeId: string, sourceId: string): b
   return Boolean(db.prepare(`WITH node AS (SELECT * FROM nodes WHERE id = @nodeId),
     origin AS (
       SELECT c.id FROM candidates c, node n
-      WHERE c.id = json_extract(n.metadata_json, '$.approved_from_candidate_id')
+      JOIN node_source_provenance provenance ON provenance.node_id = n.id AND provenance.source_id = @sourceId
+      WHERE c.id = provenance.originating_candidate_id
+        AND c.id = json_extract(n.metadata_json, '$.approved_from_candidate_id')
         AND c.status = 'approved' AND c.privacy_level = 'normal' AND n.privacy_level = 'normal'
         AND c.knowledge_scope = n.knowledge_scope AND c.scope_kind = n.scope_kind
         AND c.scope_user_id IS n.scope_user_id AND c.scope_project_id IS n.scope_project_id
@@ -71,11 +74,19 @@ function hasOtherSourceOwners(db: MemoryDb, nodeId: string, sourceId: string): b
       ) LIMIT 1`).get({ nodeId, sourceId }));
 }
 
-// Legacy node_sources links do not attest that a quote belongs exclusively to
-// this node. A shared excerpt may paraphrase other owners, so comparing their
-// literal content cannot establish isolation. Project the allowed assertion
-// whenever ownership is ambiguous; keep quotes for sources with a single owner.
+// Called only after engine-controlled writes binding explicit evidence to a node.
+// A digest binds the attestation to the exact stored quote without duplicating it.
+export function attestNodeEvidence(db: MemoryDb, nodeId: string, sourceId: string, originatingCandidateId?: string): void {
+  const row = db.prepare("SELECT evidence_text FROM node_sources WHERE node_id = ? AND source_id = ?").get(nodeId, sourceId) as { evidence_text: string | null };
+  if (row.evidence_text === null) return;
+  db.prepare(`INSERT OR REPLACE INTO node_source_provenance (node_id, source_id, evidence_digest, originating_candidate_id) VALUES (?, ?, ?, ?)`)
+    .run(nodeId, sourceId, createHash("sha256").update(row.evidence_text).digest("hex"), originatingCandidateId ?? null);
+}
+
 export function sourceEvidenceForNode(db: MemoryDb, nodeId: string, sourceId: string, evidence: string | null): string | null {
+  const provenance = db.prepare("SELECT evidence_digest FROM node_source_provenance WHERE node_id = ? AND source_id = ?").get(nodeId, sourceId) as { evidence_digest: string } | undefined;
+  if (evidence !== null && provenance?.evidence_digest === createHash("sha256").update(evidence).digest("hex")) return evidence;
+  // Legacy shared transcripts have no trustworthy per-node attribution.
   if (!hasOtherSourceOwners(db, nodeId, sourceId)) return evidence;
   const node = db.prepare("SELECT content FROM nodes WHERE id = ?").get(nodeId) as { content: string };
   return redactSecrets(node.content);
