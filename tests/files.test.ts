@@ -206,6 +206,47 @@ describe("file artifacts", () => {
     expect(path.resolve(blobPath).startsWith(path.resolve(filesDir))).toBe(true);
   });
 
+  it("never lets client metadata override server-side descriptor fields", async () => {
+    const bytes = Buffer.from("descriptor integrity bytes", "utf8");
+    const response = await store(bytes, {
+      metadata: {
+        file_id: "file:fake",
+        sha256: "0".repeat(64),
+        size: 999999,
+        original_name: "evil.txt",
+        download_url: "https://evil.example/x",
+        custom_tag: "qa-ok"
+      }
+    });
+    expect(response.statusCode).toBe(201);
+    const { file, memory } = response.json();
+    expect(memory.metadata.file_id).toBe(file.id);
+    expect(memory.metadata.sha256).toBe(file.sha256);
+    expect(memory.metadata.size).toBe(bytes.length);
+    expect(memory.metadata.original_name).toBe("notes.txt");
+    expect(memory.metadata.download_url).toBe(`/v1/files/${file.id}/content`);
+    expect(memory.metadata.custom_tag).toBe("qa-ok");
+
+    const content = await app.inject({ method: "GET", url: `/v1/files/${file.id}/content` });
+    expect(content.statusCode).toBe(200);
+    expect(content.rawPayload.equals(bytes)).toBe(true);
+  });
+
+  it("rejects an invalid mime_type with 400 instead of failing on download", async () => {
+    const bad = await store(Buffer.from("mime bytes"), { mime_type: "text/plain\r\nX-Injected: 1" });
+    expect(bad.statusCode).toBe(400);
+
+    const weird = await store(Buffer.from("mime bytes"), { mime_type: "not-a-mime-type" });
+    expect(weird.statusCode).toBe(400);
+
+    const good = await store(Buffer.from("mime bytes"), { mime_type: "text/markdown" });
+    expect(good.statusCode).toBe(201);
+    const { file } = good.json();
+    const content = await app.inject({ method: "GET", url: `/v1/files/${file.id}/content` });
+    expect(content.statusCode).toBe(200);
+    expect(content.headers["content-type"]).toContain("text/markdown");
+  });
+
   it("applies the API key to the new file routes", async () => {
     const originalKey = process.env.MEMORY_API_KEY;
     process.env.MEMORY_API_KEY = "files-test-key";

@@ -10,6 +10,7 @@ import type { MemoryNode, Scope } from "./types.js";
 
 export const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 export const FILE_NODE_TYPE = "Artifact";
+export const MIME_TYPE_PATTERN = /^[-\w.+]+\/[-\w.+]+$/u;
 
 export type FileDescriptor = {
   id: string;
@@ -138,7 +139,8 @@ export function storeFile(db: MemoryDb, filesDir: string, input: StoreFileInput)
   if (input.expectedSha256 && input.expectedSha256.toLowerCase() !== sha256) {
     throw new ValidationError("Provided sha256 does not match the uploaded content");
   }
-  const mimeType = input.mimeType?.trim() || detectMimeType(originalName);
+  const trimmedMimeType = input.mimeType?.trim() || "";
+  const mimeType = MIME_TYPE_PATTERN.test(trimmedMimeType) ? trimmedMimeType : detectMimeType(originalName);
   const description = input.description.trim();
   if (!description) {
     throw new ValidationError("File description is required");
@@ -159,13 +161,13 @@ export function storeFile(db: MemoryDb, filesDir: string, input: StoreFileInput)
     confidence: input.confidence ?? 0.8,
     privacy_level: "normal",
     metadata: {
+      ...input.metadata,
       file_id: fileId,
       original_name: originalName,
       mime_type: mimeType,
       size: input.bytes.length,
       sha256,
-      download_url: `/v1/files/${fileId}/content`,
-      ...input.metadata
+      download_url: `/v1/files/${fileId}/content`
     },
     source: { kind: "mcp", title: "Файловый артефакт сохранён через HTTP API" }
   });

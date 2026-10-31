@@ -12,7 +12,12 @@ const createFileSchema = z.object({
   content_base64: z.string().min(1),
   filename: z.string().min(1).max(300),
   description: z.string().min(1).max(2000),
-  mime_type: z.string().min(1).max(200).optional(),
+  mime_type: z
+    .string()
+    .min(1)
+    .max(200)
+    .regex(/^[-\w.+]+\/[-\w.+]+$/u, "mime_type must be a valid MIME type")
+    .optional(),
   scope: scopeSchema,
   confidence: z.number().min(0).max(1).optional(),
   privacy_level: z.enum(["normal", "sensitive", "secret"]).optional(),
