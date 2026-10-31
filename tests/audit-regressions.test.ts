@@ -363,10 +363,13 @@ describe("technical audit regressions", () => {
   it.each([false, true])("preserves each independent revision side with identical values (delete current=%s)", async (deleteCurrent) => {
     const content = "Independent identical preference";
     const metadata = { profile_sub_topic: "identical-owner" };
-    const m1 = await send("POST", "/v1/memories", { type: "Preference", content, scope: qa, confidence: 0.6,
-      metadata, source: { kind: "manual", content_excerpt: "First owner's exact quote" } }, 201);
-    const m2 = await send("POST", "/v1/memories", { type: "Preference", content, scope: qa, confidence: 0.95,
-      metadata, source: { kind: "manual", content_excerpt: "Second owner's exact quote" } }, 201);
+    // Seed independent historical nodes: POST intentionally deduplicates identical memories.
+    const m1 = memory(content, { type: "Preference", confidence: 0.6,
+      metadata, source: { kind: "manual", content_excerpt: "First owner's exact quote" } });
+    applyMemoryToProfile(db, m1);
+    const m2 = memory(content, { type: "Preference", confidence: 0.95,
+      metadata, source: { kind: "manual", content_excerpt: "Second owner's exact quote" } });
+    applyMemoryToProfile(db, m2);
     expect(m2.id).not.toBe(m1.id);
     const slot = listProfileSlots(db, { project_id: qa.project_id })[0];
     const revisions = () => db.prepare("SELECT * FROM profile_slot_revisions WHERE slot_id = ? ORDER BY rowid").all(slot.id) as
