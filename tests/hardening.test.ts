@@ -167,6 +167,48 @@ describe("scope, privacy, and review hardening", () => {
     expect(source.content_excerpt).not.toContain("abcdefghijklmnop");
   });
 
+  it("redacts credentials smuggled via source.kind in storage, explain, recall, and explorer", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/memories",
+      payload: {
+        type: "Fact",
+        content: "Source kind redaction probe.",
+        scope: { kind: "global" },
+        source: { kind: "api_key=abcdefghijklmnop" }
+      }
+    });
+    expect(created.statusCode).toBe(201);
+    const memoryId = created.json().memory.id;
+
+    const stored = db.prepare("SELECT kind FROM sources ORDER BY created_at DESC LIMIT 1").get() as { kind: string };
+    expect(stored.kind).toBe("[redacted: credential]");
+    expect(stored.kind).not.toContain("abcdefghijklmnop");
+
+    const explain = await app.inject({ method: "GET", url: `/v1/memories/${memoryId}/explain` });
+    const explainSources = explain.json().sources.map((source: { kind: string }) => source.kind);
+    expect(explainSources).toEqual(["[redacted: credential]"]);
+
+    const recall = await app.inject({
+      method: "POST",
+      url: "/v1/recall",
+      payload: { query: "source kind redaction probe", scope: { kind: "global" }, include_sources: true }
+    });
+    const recallKinds = recall.json().results.flatMap((item: { sources?: Array<{ kind: string }> }) =>
+      (item.sources ?? []).map((source) => source.kind)
+    );
+    expect(recallKinds).toEqual(["[redacted: credential]"]);
+
+    const explorer = await app.inject({ method: "GET", url: "/v1/explorer" });
+    const sourceItems = explorer
+      .json()
+      .items.filter((item: { kind: string }) => item.kind === "source")
+      .filter((item: { id: string }) => item.id !== undefined);
+    const serialized = JSON.stringify(sourceItems);
+    expect(serialized).toContain("[redacted: credential]");
+    expect(serialized).not.toContain("abcdefghijklmnop");
+  });
+
   it("does not let weaker profile evidence replace content or lower privacy", async () => {
     await app.inject({
       method: "POST",

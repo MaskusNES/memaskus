@@ -17,7 +17,7 @@ export type CreateSourceInput = {
 export function createSource(db: MemoryDb, input: CreateSourceInput): Source {
   const source: Source = {
     id: newId("src"),
-    kind: input.kind,
+    kind: redactSecrets(input.kind),
     external_id: input.external_id ? redactSecrets(input.external_id) : null,
     title: input.title ? redactSecrets(input.title) : null,
     content_excerpt: input.content_excerpt ? redactSecrets(input.content_excerpt) : null,

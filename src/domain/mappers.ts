@@ -1,3 +1,4 @@
+import { redactSecrets } from "./privacy.js";
 import type { Edge, MemoryNode, Scope, Source } from "./types.js";
 
 type NodeRow = {
@@ -66,7 +67,7 @@ export function mapNode(row: NodeRow): MemoryNode {
 export function mapSource(row: SourceRow): Source {
   return {
     id: row.id,
-    kind: row.kind,
+    kind: redactSecrets(row.kind),
     external_id: row.external_id,
     title: row.title,
     content_excerpt: row.content_excerpt,

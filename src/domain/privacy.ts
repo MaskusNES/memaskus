@@ -149,6 +149,7 @@ export function redactSourcesForMemory(
 ): Source[] {
   return sources.map((source) => ({
     ...source,
+    kind: redactSecrets(source.kind),
     title:
       memory.privacy_level === "normal"
         ? source.title
