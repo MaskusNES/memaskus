@@ -83,6 +83,7 @@ export async function registerReviewRoutes(app: FastifyInstance, db: MemoryDb): 
       conflicts: result.conflicts.map(publicConflict),
       preference_review: {
         ...result.preference_review,
+        clarification_questions: result.preference_review.clarification_questions.map(redactSecrets),
         disagreements: result.preference_review.disagreements.map((item) => ({
           ...item,
           user_text: redactSecrets(item.user_text),

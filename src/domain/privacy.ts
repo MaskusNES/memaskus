@@ -1,15 +1,16 @@
+import type { MemoryDb } from "../db/connection.js";
 import { ValidationError } from "../shared/errors.js";
 import type { Candidate } from "./candidates.js";
 import type { MemoryConflict } from "./review.js";
 import type { MemoryNode, MemoryRevision, ProfileSlot, ProfileSlotRevision, Source } from "./types.js";
 
 const secretPatterns: RegExp[] = [
-  /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/iu,
+  /-----BEGIN ((?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)/iu,
   /\bsk-[a-z0-9_-]{20,}\b/iu,
   /\b(?:ghp|gho|ghu|ghs|github_pat)_[a-z0-9_]{20,}\b/iu,
   /\bAKIA[0-9A-Z]{16}\b/u,
   /\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b/u,
-  /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret)\s*[:=]\s*["']?[^\s"',;]{8,}/iu
+  /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret)["']?\s*[:=]\s*["']?[^\s"',;]{8,}/iu
 ];
 
 export function containsSecret(value: string): boolean {
@@ -87,6 +88,10 @@ export function publicProfileSlot(slot: ProfileSlot): ProfileSlot {
   };
 }
 
+function historyPrivacy(current: MemoryNode["privacy_level"], historical?: MemoryNode["privacy_level"]): MemoryNode["privacy_level"] {
+  return current === "normal" ? historical ?? "secret" : current;
+}
+
 export function publicProfileRevision(
   revision: ProfileSlotRevision,
   privacyLevel: ProfileSlot["privacy_level"]
@@ -96,9 +101,9 @@ export function publicProfileRevision(
     previous_content:
       revision.previous_content === null || revision.previous_content === undefined
         ? revision.previous_content
-        : redactedContent({ content: revision.previous_content, privacy_level: privacyLevel }),
-    next_content: redactedContent({ content: revision.next_content, privacy_level: privacyLevel }),
-    reason: privacyLevel === "normal" ? revision.reason : "protected profile revision"
+        : redactedContent({ content: revision.previous_content, privacy_level: historyPrivacy(privacyLevel, revision.previous_privacy_level) }),
+    next_content: redactedContent({ content: revision.next_content, privacy_level: historyPrivacy(privacyLevel, revision.next_privacy_level) }),
+    reason: historyPrivacy(privacyLevel, revision.previous_privacy_level) === "normal" && revision.next_privacy_level === "normal" ? (revision.reason ? redactSecrets(revision.reason) : revision.reason) : "protected profile revision"
   };
 }
 
@@ -111,10 +116,10 @@ export function publicMemoryRevision(
     previous_content:
       revision.previous_content === null || revision.previous_content === undefined
         ? revision.previous_content
-        : redactedContent({ content: revision.previous_content, privacy_level: privacyLevel }),
-    next_content: redactedContent({ content: revision.next_content, privacy_level: privacyLevel }),
+        : redactedContent({ content: revision.previous_content, privacy_level: historyPrivacy(privacyLevel, revision.previous_privacy_level) }),
+    next_content: redactedContent({ content: revision.next_content, privacy_level: historyPrivacy(privacyLevel, revision.next_privacy_level) }),
     reason:
-      privacyLevel === "normal"
+      historyPrivacy(privacyLevel, revision.previous_privacy_level) === "normal" && revision.next_privacy_level === "normal"
         ? revision.reason
           ? redactSecrets(revision.reason)
           : revision.reason
@@ -144,6 +149,7 @@ export function redactSourcesForMemory(
 ): Source[] {
   return sources.map((source) => ({
     ...source,
+    kind: redactSecrets(source.kind),
     title:
       memory.privacy_level === "normal"
         ? source.title
@@ -163,4 +169,30 @@ export function redactSourcesForMemory(
       : source.content_excerpt,
     metadata: memory.privacy_level === "normal" ? sanitizeMetadata(source.metadata) : {}
   }));
+}
+
+// A downgrade starts a new public metadata payload. Only validated internal
+// identities survive; arbitrary text from the protected payload never does.
+export function replacementMetadata(db: MemoryDb, existing: Record<string, unknown>, supplied: Record<string, unknown> | undefined, wasProtected: boolean, nextPrivacy: MemoryNode["privacy_level"]): Record<string, unknown> {
+  if (!wasProtected || nextPrivacy !== "normal") return { ...existing, ...sanitizeMetadata(supplied) };
+  const retained: Record<string, unknown> = {};
+  if (existing.knowledge_scope === "global" || existing.knowledge_scope === "project_local") retained.knowledge_scope = existing.knowledge_scope;
+  for (const [key, table] of [["source_memory_id", "nodes"], ["approved_from_candidate_id", "candidates"], ["merged_candidate_id", "candidates"]]) {
+    const id = existing[key];
+    if (typeof id === "string" && db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id)) retained[key] = id;
+  }
+  if (retained.source_memory_id && existing.projected_from_memory === true) retained.projected_from_memory = true;
+  return { ...retained, ...sanitizeMetadata(supplied) };
+}
+
+// Reclassification applies to every historical copy of this value, including
+// the escalation revision. Preserve rows and never weaken an earlier label.
+export function protectHistoricalValue(db: MemoryDb, table: "memory_revisions" | "profile_slot_revisions", id: string, value: string, privacy: MemoryNode["privacy_level"]): void {
+  if (privacy === "normal") return;
+  const owner = table === "memory_revisions" ? "memory_id" : "slot_id";
+  for (const side of ["previous", "next"]) {
+    db.prepare(`UPDATE ${table} SET ${side}_privacy_level = ?
+      WHERE ${owner} = ? AND ${side}_content = ?
+      AND (${side}_privacy_level = 'normal' OR (${side}_privacy_level = 'sensitive' AND ? = 'secret'))`).run(privacy, id, value, privacy);
+  }
 }

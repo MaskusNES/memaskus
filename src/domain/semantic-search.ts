@@ -130,6 +130,12 @@ async function synchronizeVisibleEmbeddingsInternal(
            updated_at = excluded.updated_at`
       );
       batch.forEach(({ memory }, index) => {
+        // The provider yields control; lifecycle changes may invalidate this snapshot.
+        const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(memory.id);
+        if (!row) return;
+        const current = mapNode(row as never);
+        if (current.status !== "active" || current.privacy_level !== "normal" ||
+            contentHash(current) !== contentHash(memory) || current.updated_at !== memory.updated_at) return;
         upsert.run(
           memory.id,
           provider.id,

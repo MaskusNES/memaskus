@@ -1,3 +1,4 @@
+import { attestNodeEvidence } from "./sources.js";
 import { isDeepStrictEqual } from "node:util";
 import type { MemoryDb } from "../db/connection.js";
 import { nowIso } from "../shared/time.js";
@@ -64,6 +65,7 @@ export function createOrReuseMemory(db: MemoryDb, input: CreateMemoryInput) {
           VALUES (?, ?, ?, ?)`).run(
           memory.id, source.id, redactSecrets(input.source.content_excerpt ?? input.content), nowIso()
         );
+        attestNodeEvidence(db, memory.id, source.id);
       }
       const updated = changed ? getMemory(db, memory.id) : memory;
       if (changed) synchronizeProfileForMemory(db, updated, "compatible memory repeated");

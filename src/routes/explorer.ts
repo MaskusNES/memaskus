@@ -38,7 +38,12 @@ export async function registerExplorerRoutes(app: FastifyInstance, db: MemoryDb)
       ? { kind: "project", project_id: input.project_id }
       : { kind: "global" };
 
-    const memories = listMemories(db, { scope, status: "active", limit: 200 }).memories.map(publicMemory);
+    const firstPage = listMemories(db, { scope, status: "active", limit: 200 });
+    const allMemories = [...firstPage.memories];
+    for (let offset = 200; offset < firstPage.total; offset += 200) {
+      allMemories.push(...listMemories(db, { scope, status: "active", limit: 200, offset }).memories);
+    }
+    const memories = allMemories.map(publicMemory);
     const candidates = listCandidatesByStatuses(db, ["pending", "blocked"])
       .filter((candidate) => scopeVisibleFrom(candidate.scope, scope))
       .map(publicCandidate);
@@ -105,11 +110,11 @@ export async function registerExplorerRoutes(app: FastifyInstance, db: MemoryDb)
     return {
       items,
       counts: {
-        memories: memories.length,
+        memories: firstPage.total,
         profiles: profiles.length,
         candidates: candidates.length,
         conflicts: conflicts.length,
-        sources: sourceItems.length
+        sources: firstPage.memories.reduce((count, memory) => count + listSourcesForNode(db, memory.id).length, 0)
       }
     };
   });

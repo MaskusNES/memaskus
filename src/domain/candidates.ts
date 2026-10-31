@@ -1,3 +1,4 @@
+import { attestNodeEvidence } from "./sources.js";
 import type { MemoryDb } from "../db/connection.js";
 import { NotFoundError, ValidationError } from "../shared/errors.js";
 import { newId } from "../shared/ids.js";
@@ -332,6 +333,7 @@ function approveCandidateWithStatuses(db: MemoryDb, id: string, allowedStatuses:
         `INSERT INTO node_sources (node_id, source_id, evidence_text, created_at)
          VALUES (?, ?, ?, ?)`
       ).run(memory.id, candidate.source_id, candidate.content, now);
+      attestNodeEvidence(db, memory.id, candidate.source_id, candidate.id);
     }
 
     db.prepare("UPDATE candidates SET status = 'approved', updated_at = ? WHERE id = ?").run(now, id);
@@ -467,12 +469,14 @@ export function mergeCandidate(db: MemoryDb, id: string, memoryId: string): { ca
       reason: `merged candidate ${candidate.id}`
     });
     if (candidate.source_id) {
-      db.prepare(
+      const linked = db.prepare(
         `INSERT OR IGNORE INTO node_sources (node_id, source_id, evidence_text, created_at)
          VALUES (?, ?, ?, ?)`
       ).run(memoryId, candidate.source_id, redactSecrets(candidate.content), nowIso());
+      if (linked.changes > 0) attestNodeEvidence(db, memoryId, candidate.source_id);
     }
-    db.prepare("UPDATE candidates SET status = 'merged', updated_at = ? WHERE id = ?").run(nowIso(), id);
+    db.prepare("UPDATE candidates SET status = 'merged', metadata_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify({ ...candidate.metadata, approved_memory_id: memoryId }), nowIso(), id);
     db.prepare(
       `UPDATE candidate_conflicts
        SET status = 'resolved', resolution = ?, updated_at = ?

@@ -3,6 +3,7 @@ import { newId } from "../shared/ids.js";
 import { nowIso } from "../shared/time.js";
 import { approveCandidate, insertCandidate, updateCandidateStatus, type Candidate } from "./candidates.js";
 import { metadataKnowledgeScope, type KnowledgeScope } from "./links.js";
+import { redactSecrets } from "./privacy.js";
 import { contradictionReason, findRelevantMemories, insertConflict, type MemoryConflict } from "./review.js";
 import type { MemoryNode, Scope } from "./types.js";
 
@@ -358,7 +359,10 @@ function potentialConflictReason(candidate: Candidate, memory: MemoryNode): stri
 export function reviewPreferenceSignalsFromConversation(db: MemoryDb, input: PreferenceReviewInput): PreferenceReviewResult {
   const scope: Scope = input.project_id ? { kind: "project", project_id: input.project_id } : { kind: "global" };
   const disagreements =
-    input.analysis_mode === "agent_supplied" ? normalizeAgentSuppliedDisagreements(input) : extractDisagreements(input.text);
+    input.analysis_mode === "agent_supplied"
+      ? normalizeAgentSuppliedDisagreements(input)
+      // Preserve multiline credential boundaries until redaction is complete.
+      : extractDisagreements(redactSecrets(input.text));
   const clearDisagreements = disagreements.filter((signal) => signal.reason_is_clear);
   const clarificationQuestions = disagreements
     .filter((signal) => !signal.reason_is_clear && signal.clarification_question)

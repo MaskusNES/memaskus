@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { MemoryDb } from "../db/connection.js";
 import { NotFoundError, ValidationError } from "../shared/errors.js";
 import { newId } from "../shared/ids.js";
@@ -5,6 +6,8 @@ import { nowIso } from "../shared/time.js";
 import { metadataKnowledgeScope } from "./links.js";
 import {
   assertSafeForStorage,
+  replacementMetadata,
+  protectHistoricalValue,
   publicProfileSlot,
   redactSecrets,
   redactedContent,
@@ -85,6 +88,8 @@ type SlotRow = {
 };
 
 type RevisionRow = {
+  previous_privacy_level: PrivacyLevel;
+  next_privacy_level: PrivacyLevel;
   id: string;
   slot_id: string;
   previous_content: string | null;
@@ -171,6 +176,8 @@ function mapRevision(row: RevisionRow): ProfileSlotRevision {
   return {
     id: row.id,
     slot_id: row.slot_id,
+    previous_privacy_level: row.previous_privacy_level,
+    next_privacy_level: row.next_privacy_level,
     previous_content: row.previous_content,
     next_content: row.next_content,
     reason: row.reason,
@@ -243,6 +250,8 @@ function insertRevision(
   db: MemoryDb,
   input: {
     slot_id: string;
+    previous_privacy_level?: PrivacyLevel;
+    next_privacy_level?: PrivacyLevel;
     previous_content?: string | null;
     next_content: string;
     reason?: string;
@@ -253,6 +262,8 @@ function insertRevision(
 ): ProfileSlotRevision {
   const revision: ProfileSlotRevision = {
     id: newId("prof_rev"),
+    previous_privacy_level: input.previous_privacy_level ?? getProfileSlot(db, input.slot_id).privacy_level,
+    next_privacy_level: input.next_privacy_level ?? getProfileSlot(db, input.slot_id).privacy_level,
     slot_id: input.slot_id,
     previous_content: input.previous_content ?? null,
     next_content: input.next_content,
@@ -264,9 +275,9 @@ function insertRevision(
   };
   db.prepare(
     `INSERT INTO profile_slot_revisions (
-      id, slot_id, previous_content, next_content, reason, candidate_id, memory_id, source_id, created_at
+      id, slot_id, previous_content, next_content, reason, candidate_id, memory_id, source_id, created_at, previous_privacy_level, next_privacy_level
     ) VALUES (
-      @id, @slot_id, @previous_content, @next_content, @reason, @candidate_id, @memory_id, @source_id, @created_at
+      @id, @slot_id, @previous_content, @next_content, @reason, @candidate_id, @memory_id, @source_id, @created_at, @previous_privacy_level, @next_privacy_level
     )`
   ).run(revision);
   return revision;
@@ -274,16 +285,21 @@ function insertRevision(
 
 function addSlotSource(
   db: MemoryDb,
-  input: { slot_id: string; source_id?: string; evidence_text?: string }
+  input: { slot_id: string; source_id?: string; evidence_text?: string; memory_id?: string; candidate_id?: string }
 ): void {
   if (!input.source_id) {
     return;
   }
 
-  db.prepare(
+  const inserted = db.prepare(
     `INSERT OR IGNORE INTO profile_slot_sources (slot_id, source_id, evidence_text, created_at)
      VALUES (?, ?, ?, ?)`
   ).run(input.slot_id, input.source_id, input.evidence_text ? redactSecrets(input.evidence_text) : null, nowIso());
+  if (inserted.changes && input.evidence_text && (input.memory_id || input.candidate_id)) {
+    db.prepare(`INSERT INTO profile_source_provenance (slot_id, source_id, evidence_digest, memory_id, candidate_id)
+      VALUES (?, ?, ?, ?, ?)`).run(input.slot_id, input.source_id,
+        createHash("sha256").update(redactSecrets(input.evidence_text)).digest("hex"), input.memory_id ?? null, input.candidate_id ?? null);
+  }
 }
 
 function strongestPrivacy(left: PrivacyLevel, right: PrivacyLevel | undefined): PrivacyLevel {
@@ -316,7 +332,16 @@ function revisionExistsForEvidence(
   return Boolean(row);
 }
 
+function validateReferences(db: MemoryDb, input: PatchProfileSlotInput): void {
+  for (const [table, id] of [["sources", input.source_id], ["nodes", input.memory_id], ["candidates", input.candidate_id]]) {
+    if (id && !db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id)) {
+      throw new ValidationError(`Unknown ${table} reference`);
+    }
+  }
+}
+
 export function upsertProfileSlot(db: MemoryDb, input: UpsertProfileSlotInput): ProfileSlot {
+  validateReferences(db, input);
   assertSafeForStorage(input.content, "profile content");
   const userId = normalizeUserId(input.user_id);
   const topic = normalizeTopic(input.topic);
@@ -375,23 +400,26 @@ export function upsertProfileSlot(db: MemoryDb, input: UpsertProfileSlotInput): 
         memory_id: input.memory_id,
         source_id: input.source_id
       });
-      addSlotSource(db, { slot_id: slot.id, source_id: input.source_id, evidence_text: input.evidence_text });
+      addSlotSource(db, { ...input, slot_id: slot.id });
       result = slot;
       return;
     }
 
     const acceptsReplacement = input.force_replace || input.content === existing.content || confidence >= existing.confidence;
-    result = patchProfileSlot(db, existing.id, {
+    result = patchProfileSlotInternal(db, existing.id, {
       content: acceptsReplacement ? input.content : existing.content,
       confidence: acceptsReplacement ? Math.max(existing.confidence, confidence) : existing.confidence,
       privacy_level: strongestPrivacy(existing.privacy_level, input.privacy_level),
-      metadata: sanitizeMetadata(input.metadata),
+      metadata: acceptsReplacement ? sanitizeMetadata(input.metadata) : existing.metadata,
       source_id: input.source_id,
       evidence_text: input.evidence_text,
       candidate_id: input.candidate_id,
-      memory_id: input.memory_id,
+      // memory_id attributes the revision value, while source_id/candidate_id
+      // identify the incoming evidence. Rejected evidence cannot take ownership
+      // of the retained value (or make forgetting its author erase that value).
+      memory_id: acceptsReplacement ? input.memory_id : undefined,
       reason: input.reason ?? "profile slot updated from new evidence"
-    });
+    }, input.memory_id);
   });
 
   transaction();
@@ -410,6 +438,11 @@ export function getProfileSlot(db: MemoryDb, id: string): ProfileSlot {
 }
 
 export function patchProfileSlot(db: MemoryDb, id: string, input: PatchProfileSlotInput): ProfileSlot {
+  return db.transaction(() => patchProfileSlotInternal(db, id, input))();
+}
+
+function patchProfileSlotInternal(db: MemoryDb, id: string, input: PatchProfileSlotInput, evidenceMemoryId = input.memory_id): ProfileSlot {
+  validateReferences(db, input);
   const existing = getProfileSlot(db, id);
   if (existing.status !== "active") {
     throw new ValidationError(`Profile slot ${id} is ${existing.status}, not active`);
@@ -418,12 +451,13 @@ export function patchProfileSlot(db: MemoryDb, id: string, input: PatchProfileSl
   if (input.content !== undefined) {
     assertSafeForStorage(input.content, "profile content");
   }
+  // A manual edit remains part of the current projection owner's history.
+  const revisionMemoryId = input.memory_id ??
+    (typeof existing.metadata.source_memory_id === "string" ? existing.metadata.source_memory_id : undefined);
   const nextContent = input.content ?? existing.content;
   const nextConfidence = input.confidence === undefined ? existing.confidence : normalizeConfidence(input.confidence);
   const nextPrivacyLevel = input.privacy_level ?? existing.privacy_level;
-  const nextMetadata = input.metadata
-    ? { ...existing.metadata, ...sanitizeMetadata(input.metadata) }
-    : existing.metadata;
+  const nextMetadata = replacementMetadata(db, existing.metadata, input.metadata, existing.privacy_level !== "normal", nextPrivacyLevel);
   const now = nowIso();
 
   db.prepare(
@@ -437,7 +471,7 @@ export function patchProfileSlot(db: MemoryDb, id: string, input: PatchProfileSl
     !revisionExistsForEvidence(db, {
       slot_id: id,
       next_content: nextContent,
-      memory_id: input.memory_id,
+      memory_id: revisionMemoryId,
       candidate_id: input.candidate_id,
       source_id: input.source_id
     });
@@ -446,15 +480,18 @@ export function patchProfileSlot(db: MemoryDb, id: string, input: PatchProfileSl
     insertRevision(db, {
       slot_id: id,
       previous_content: existing.content,
+      previous_privacy_level: existing.privacy_level,
+      next_privacy_level: nextPrivacyLevel,
       next_content: nextContent,
       reason: input.reason ?? "profile slot patched",
       candidate_id: input.candidate_id,
-      memory_id: input.memory_id,
+      memory_id: revisionMemoryId,
       source_id: input.source_id
     });
   }
 
-  addSlotSource(db, { slot_id: id, source_id: input.source_id, evidence_text: input.evidence_text });
+  protectHistoricalValue(db, "profile_slot_revisions", id, existing.content, nextPrivacyLevel);
+  addSlotSource(db, { ...input, slot_id: id, memory_id: evidenceMemoryId });
   return getProfileSlot(db, id);
 }
 
@@ -595,6 +632,9 @@ export function applyMemoryToProfile(
   }
   const sources = listSourcesForNode(db, memory.id);
   const source = sources[0];
+  const replacementSlots = (options.replace_memory_ids ?? []).flatMap((id) => profileSlotIdsForMemory(db, id))
+    .filter((id) => getProfileSlot(db, id).status === "active");
+  for (const id of replacementSlots.slice(1)) archiveProfileSlot(db, id, "replaced by accepted preference");
   for (const replacedMemoryId of options.replace_memory_ids ?? []) {
     const replacementSlotId = profileSlotIdsForMemory(db, replacedMemoryId).find(
       (slotId) => getProfileSlot(db, slotId).status === "active"
@@ -641,11 +681,9 @@ function profileSlotIdsForMemory(db: MemoryDb, memoryId: string): string[] {
     .prepare(
       `SELECT DISTINCT ps.id
        FROM profile_slots ps
-       LEFT JOIN profile_slot_revisions revision ON revision.slot_id = ps.id
-       WHERE json_extract(ps.metadata_json, '$.source_memory_id') = ?
-          OR revision.memory_id = ?`
+       WHERE json_extract(ps.metadata_json, '$.source_memory_id') = ?`
     )
-    .all(memoryId, memoryId) as Array<{ id: string }>;
+    .all(memoryId) as Array<{ id: string }>;
   return rows.map((row) => row.id);
 }
 
@@ -655,6 +693,7 @@ export function synchronizeProfileForMemory(db: MemoryDb, memory: MemoryNode, re
   }
   const slotIds = profileSlotIdsForMemory(db, memory.id);
   if (slotIds.length === 0) {
+    if (db.prepare("SELECT 1 FROM profile_slot_revisions WHERE memory_id = ? LIMIT 1").get(memory.id)) return;
     applyMemoryToProfile(db, memory, { force_replace: true });
     return;
   }

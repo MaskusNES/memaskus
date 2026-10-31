@@ -1,3 +1,4 @@
+import { attestNodeEvidence } from "./sources.js";
 import type { MemoryDb } from "../db/connection.js";
 import { NotFoundError } from "../shared/errors.js";
 import { newId } from "../shared/ids.js";
@@ -83,6 +84,7 @@ export function createMemory(db: MemoryDb, input: CreateMemoryInput): MemoryNode
         `INSERT INTO node_sources (node_id, source_id, evidence_text, created_at)
          VALUES (?, ?, ?, ?)`
       ).run(node.id, source.id, redactSecrets(input.source.content_excerpt ?? input.content), now);
+      attestNodeEvidence(db, node.id, source.id);
     }
   });
 

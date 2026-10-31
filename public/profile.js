@@ -29,6 +29,8 @@ const contextPreview = document.querySelector("#contextPreview");
 let slots = [];
 let selectedSlot = null;
 let revisions = [];
+let contentChanged = false;
+contentEditor.addEventListener("input", () => { contentChanged = true; });
 
 function compactText(value, maxLength = 180) {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -138,7 +140,10 @@ function fillEditor(slot) {
   projectEditor.value = slot.scope_project_id ?? projectInput.value.trim();
   confidenceEditor.value = String(slot.confidence ?? 0.8);
   privacyEditor.value = slot.privacy_level ?? "normal";
-  contentEditor.value = slot.content ?? "";
+  contentChanged = false;
+  contentEditor.required = !slot.id;
+  contentEditor.value = slot.privacy_level && slot.privacy_level !== "normal" ? "" : slot.content ?? "";
+  contentEditor.placeholder = slot.privacy_level !== "normal" ? "Введите текст для явной замены" : "";
   reasonEditor.value = slot.id ? "manual profile edit" : "manual profile creation";
   topicEditor.disabled = Boolean(slot.id);
   subTopicEditor.disabled = Boolean(slot.id);
@@ -194,8 +199,8 @@ async function loadSlots() {
 
 async function selectSlot(id) {
   const data = await requestJson(`/v1/profile/slots/${encodeURIComponent(id)}`);
-  revisions = data.revisions ?? [];
   fillEditor(data.slot);
+  revisions = data.revisions ?? [];
   renderRevisions();
   renderSlots();
 }
@@ -218,7 +223,7 @@ function newSlot() {
 function editorPayload() {
   const knowledgeScope = knowledgeEditor.value;
   const payload = {
-    content: contentEditor.value.trim(),
+    ...(!selectedSlot?.id || contentChanged ? { content: contentEditor.value.trim() } : {}),
     confidence: Number(confidenceEditor.value),
     privacy_level: privacyEditor.value,
     reason: reasonEditor.value.trim() || undefined
@@ -240,7 +245,7 @@ function editorPayload() {
 async function saveSlot(event) {
   event.preventDefault();
   const payload = editorPayload();
-  if (!payload.content) {
+  if (payload.content !== undefined && !payload.content) {
     contentEditor.focus();
     return;
   }

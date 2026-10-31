@@ -8,10 +8,12 @@ export function explainMemory(db: MemoryDb, id: string) {
   const memory = getMemory(db, id);
   const sources = redactSourcesForMemory(memory, listSourcesForNode(db, id));
   const links = listEdgesForNode(db, id);
+  const protectedHistory = db.prepare(`SELECT 1 FROM memory_revisions WHERE memory_id = ?
+    AND (previous_privacy_level != 'normal' OR next_privacy_level != 'normal') LIMIT 1`).get(id);
   const evidence = listSourceEvidenceForNode(db, id).map((item) => ({
     ...item,
     evidence_text: item.evidence_text
-      ? redactedContent({ content: item.evidence_text, privacy_level: memory.privacy_level })
+      ? redactedContent({ content: item.evidence_text, privacy_level: protectedHistory ? "secret" : memory.privacy_level })
       : null
   }));
 

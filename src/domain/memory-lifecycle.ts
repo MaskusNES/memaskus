@@ -3,11 +3,12 @@ import { ValidationError } from "../shared/errors.js";
 import { newId } from "../shared/ids.js";
 import { nowIso } from "../shared/time.js";
 import { mapNode } from "./mappers.js";
-import { metadataKnowledgeScope } from "./links.js";
+import { linkScopesCompatible, metadataKnowledgeScope } from "./links.js";
 import { getMemory } from "./nodes.js";
 import { archiveProfileForMemory, synchronizeProfileForMemory } from "./profile.js";
-import { assertSafeForStorage, redactSecrets, sanitizeMetadata } from "./privacy.js";
+import { assertSafeForStorage, redactSecrets, replacementMetadata, protectHistoricalValue } from "./privacy.js";
 import { scopeSqlParts } from "./scope.js";
+import { hasAttestedNodeEvidence, profileEvidenceProvenance } from "./sources.js";
 import type {
   MemoryFeedback,
   MemoryNode,
@@ -35,6 +36,8 @@ export type UpdateMemoryInput = {
 };
 
 type RevisionRow = {
+  previous_privacy_level: PrivacyLevel;
+  next_privacy_level: PrivacyLevel;
   id: string;
   memory_id: string;
   previous_content: string | null;
@@ -58,6 +61,8 @@ function mapRevision(row: RevisionRow): MemoryRevision {
   return {
     id: row.id,
     memory_id: row.memory_id,
+    previous_privacy_level: row.previous_privacy_level,
+    next_privacy_level: row.next_privacy_level,
     previous_content: row.previous_content,
     next_content: row.next_content,
     previous_scope: row.previous_scope_json ? JSON.parse(row.previous_scope_json) : null,
@@ -70,12 +75,14 @@ function mapRevision(row: RevisionRow): MemoryRevision {
 function insertRevision(
   db: MemoryDb,
   existing: MemoryNode,
-  next: Pick<MemoryNode, "content" | "scope">,
+  next: Pick<MemoryNode, "content" | "scope" | "privacy_level">,
   reason: string
 ): MemoryRevision {
   const revision: MemoryRevision = {
     id: newId("mem_rev"),
     memory_id: existing.id,
+    previous_privacy_level: existing.privacy_level,
+    next_privacy_level: next.privacy_level,
     previous_content: existing.content,
     next_content: next.content,
     previous_scope: existing.scope,
@@ -85,8 +92,8 @@ function insertRevision(
   };
   db.prepare(
     `INSERT INTO memory_revisions (
-      id, memory_id, previous_content, next_content, previous_scope_json, next_scope_json, reason, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      id, memory_id, previous_content, next_content, previous_scope_json, next_scope_json, reason, created_at, previous_privacy_level, next_privacy_level
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     revision.id,
     revision.memory_id,
@@ -95,7 +102,9 @@ function insertRevision(
     JSON.stringify(revision.previous_scope),
     JSON.stringify(revision.next_scope),
     revision.reason,
-    revision.created_at
+    revision.created_at,
+    revision.previous_privacy_level,
+    revision.next_privacy_level
   );
   return revision;
 }
@@ -147,15 +156,22 @@ export function updateMemory(db: MemoryDb, id: string, input: UpdateMemoryInput)
   }
   const nextContent = input.content ?? existing.content;
   const nextScope = input.scope ?? existing.scope;
-  const nextMetadata = input.metadata
-    ? { ...existing.metadata, ...sanitizeMetadata(input.metadata) }
-    : existing.metadata;
+  const nextMetadata = replacementMetadata(db, existing.metadata, input.metadata, existing.privacy_level !== "normal", input.privacy_level ?? existing.privacy_level);
   const nextKnowledgeScope = metadataKnowledgeScope(nextMetadata, nextScope);
   nextMetadata.knowledge_scope = nextKnowledgeScope;
   const now = nowIso();
 
   const transaction = db.transaction(() => {
-    insertRevision(db, existing, { content: nextContent, scope: nextScope }, input.reason ?? "memory corrected");
+    const proposed = { ...existing, scope: nextScope, metadata: nextMetadata };
+    const edges = db.prepare("SELECT from_id, to_id, relation FROM edges WHERE status = 'active' AND (from_id = ? OR to_id = ?)").all(id, id) as Array<{ from_id: string; to_id: string; relation: string }>;
+    for (const edge of edges) {
+      const other = getMemory(db, edge.from_id === id ? edge.to_id : edge.from_id);
+      if (!linkScopesCompatible(proposed, other, edge.relation)) {
+        throw new ValidationError("Scope change would invalidate active links");
+      }
+    }
+    insertRevision(db, existing, { content: nextContent, scope: nextScope, privacy_level: input.privacy_level ?? existing.privacy_level }, input.reason ?? "memory corrected");
+    protectHistoricalValue(db, "memory_revisions", id, existing.content, input.privacy_level ?? existing.privacy_level);
     db.prepare(
       `UPDATE nodes SET
          content = ?, scope_kind = ?, scope_user_id = ?, scope_project_id = ?,
@@ -216,8 +232,24 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
       )
       .all(id, id, id) as Array<{ id: string; source_id: string | null }>;
     const candidateIds = candidateRows.map((row) => row.id);
-    const sourceRows = db.prepare("SELECT source_id FROM node_sources WHERE node_id = ?").all(id) as Array<{ source_id: string }>;
+    const forgottenValues = new Set([existing.content, ...candidateRows.map((row) =>
+      (db.prepare("SELECT content FROM candidates WHERE id = ?").get(row.id) as { content: string }).content)]);
+    const historical = db.prepare("SELECT previous_content, next_content FROM memory_revisions WHERE memory_id = ?").all(id) as Array<{ previous_content: string | null; next_content: string }>;
+    historical.forEach((revision) => { if (revision.previous_content) forgottenValues.add(revision.previous_content); forgottenValues.add(revision.next_content); });
+    const sourceRows = db.prepare("SELECT source_id, evidence_text FROM node_sources WHERE node_id = ?").all(id) as Array<{ source_id: string; evidence_text: string | null }>;
+    for (const row of sourceRows) {
+      if (row.evidence_text && hasAttestedNodeEvidence(db, id, row.source_id, row.evidence_text)) forgottenValues.add(row.evidence_text);
+    }
+    const profileSources = db.prepare(`SELECT pss.slot_id, pss.source_id, pss.evidence_text
+      FROM profile_slot_sources pss JOIN profile_source_provenance p
+        ON p.slot_id = pss.slot_id AND p.source_id = pss.source_id
+      WHERE p.memory_id = ? OR p.candidate_id IN (${candidateIds.length ? candidateIds.map(() => "?").join(",") : "NULL"})`)
+      .all(id, ...candidateIds) as Array<{ slot_id: string; source_id: string; evidence_text: string | null }>;
+    for (const row of profileSources) {
+      if (row.evidence_text && profileEvidenceProvenance(db, row.slot_id, row.source_id, row.evidence_text)) forgottenValues.add(row.evidence_text);
+    }
     const sourceIds = new Set([
+      ...profileSources.map((row) => row.source_id),
       ...sourceRows.map((row) => row.source_id),
       ...candidateRows.flatMap((row) => (row.source_id ? [row.source_id] : []))
     ]);
@@ -259,32 +291,102 @@ export function forgetMemory(db: MemoryDb, id: string, _reason = "deleted by use
       )
       .all(id, id, ...candidateIds) as Array<{ id: string }>;
     for (const slot of slotRows) {
-      const slotSourceRows = db
-        .prepare("SELECT source_id FROM profile_slot_sources WHERE slot_id = ?")
-        .all(slot.id) as Array<{ source_id: string }>;
-      for (const row of slotSourceRows) {
-        sourceIds.add(row.source_id);
+      // NULL memory_id in legacy manual revisions inherits the preceding owner.
+      // On replacement, previous_content still belongs to the outgoing owner.
+      const revisions = db.prepare(`SELECT id, memory_id, candidate_id, source_id, previous_content, next_content, reason
+        FROM profile_slot_revisions WHERE slot_id = ? ORDER BY rowid`)
+        .all(slot.id) as Array<{ id: string; memory_id: string | null; candidate_id: string | null;
+          source_id: string | null; previous_content: string | null; next_content: string; reason: string | null }>;
+      let owner: string | null = null;
+      const forgottenOwner = (value: string | null) => value === id || (value !== null && candidateIds.includes(value));
+      for (const revision of revisions) {
+        const previousOwned = forgottenOwner(owner);
+        // Legacy manual edits inherit the preceding owner. The incoming source
+        // alone does not transfer ownership (it may be rejected weaker evidence).
+        owner = revision.memory_id ?? revision.candidate_id ?? owner;
+        const nextOwned = forgottenOwner(owner);
+        if (previousOwned && revision.previous_content) forgottenValues.add(revision.previous_content);
+        if (nextOwned) forgottenValues.add(revision.next_content);
+        if (previousOwned || nextOwned) {
+          db.prepare(`UPDATE profile_slot_revisions SET previous_content = ?, next_content = ?, reason = ? WHERE id = ?`)
+            .run(previousOwned && revision.previous_content !== null ? tombstone : revision.previous_content,
+              nextOwned ? tombstone : revision.next_content, nextOwned ? tombstone : revision.reason, revision.id);
+        }
+        if ((revision.memory_id === id || (revision.candidate_id && candidateIds.includes(revision.candidate_id))) && revision.source_id) {
+          sourceIds.add(revision.source_id);
+        }
       }
+      const evidenceRows = db.prepare("SELECT source_id, evidence_text FROM profile_slot_sources WHERE slot_id = ?")
+        .all(slot.id) as Array<{ source_id: string; evidence_text: string | null }>;
+      for (const row of evidenceRows) {
+        const provenance = profileEvidenceProvenance(db, slot.id, row.source_id, row.evidence_text);
+        const owned = provenance
+          ? provenance.memory_id === id || (provenance.candidate_id !== null && candidateIds.includes(provenance.candidate_id))
+          : revisions.some((r) => r.source_id === row.source_id &&
+              (r.memory_id === id || (r.candidate_id !== null && candidateIds.includes(r.candidate_id)))) &&
+            !revisions.some((r) => r.source_id === row.source_id && r.memory_id !== null && r.memory_id !== id);
+        if (owned) {
+          if (provenance && row.evidence_text) forgottenValues.add(row.evidence_text);
+          sourceIds.add(row.source_id);
+          db.prepare("UPDATE profile_slot_sources SET evidence_text = ? WHERE slot_id = ? AND source_id = ?")
+            .run(tombstone, slot.id, row.source_id);
+        }
+      }
+      const current = db.prepare("SELECT metadata_json FROM profile_slots WHERE id = ?").get(slot.id) as { metadata_json: string };
+      if (JSON.parse(current.metadata_json).source_memory_id !== id) continue;
       db.prepare(
         `UPDATE profile_slots
          SET topic = 'deleted', sub_topic = 'memory', content = ?, status = 'deleted',
              metadata_json = '{}', updated_at = ?
          WHERE id = ?`
       ).run(tombstone, now, slot.id);
-      db.prepare("UPDATE profile_slot_sources SET evidence_text = ? WHERE slot_id = ?").run(tombstone, slot.id);
-      db.prepare(
-        `UPDATE profile_slot_revisions
-         SET previous_content = ?, next_content = ?, reason = ?
-         WHERE slot_id = ?`
-      ).run(tombstone, tombstone, tombstone, slot.id);
     }
 
     for (const sourceId of sourceIds) {
+      // Legacy evidence can duplicate a complete shared conversation. Rebuild
+      // contaminated surviving links only when the quote lacks valid provenance.
+      const evidenceRows = db.prepare("SELECT node_id, evidence_text FROM node_sources WHERE source_id = ?")
+        .all(sourceId) as Array<{ node_id: string; evidence_text: string | null }>;
+      for (const row of evidenceRows) {
+        if (hasAttestedNodeEvidence(db, row.node_id, sourceId, row.evidence_text)) continue;
+        const evidence = row.evidence_text;
+        if (evidence && [...forgottenValues].some((value) => evidence.includes(value))) {
+          db.prepare(`UPDATE node_sources SET evidence_text = (SELECT content FROM nodes WHERE id = node_id)
+            WHERE node_id = ? AND source_id = ?`).run(row.node_id, sourceId);
+        }
+      }
+      const profileEvidence = db.prepare("SELECT slot_id, evidence_text FROM profile_slot_sources WHERE source_id = ?")
+        .all(sourceId) as Array<{ slot_id: string; evidence_text: string | null }>;
+      for (const row of profileEvidence) {
+        const provenance = profileEvidenceProvenance(db, row.slot_id, sourceId, row.evidence_text);
+        if (provenance) {
+          if (provenance.memory_id === id || (provenance.candidate_id !== null && candidateIds.includes(provenance.candidate_id))) {
+            db.prepare("UPDATE profile_slot_sources SET evidence_text = ? WHERE slot_id = ? AND source_id = ?")
+              .run(tombstone, row.slot_id, sourceId);
+          }
+          continue;
+        }
+        if (row.evidence_text !== tombstone && [...forgottenValues].some((value) => row.evidence_text?.includes(value))) {
+          db.prepare(`UPDATE profile_slot_sources SET evidence_text = (SELECT content FROM profile_slots WHERE id = slot_id)
+            WHERE slot_id = ? AND source_id = ?`).run(row.slot_id, sourceId);
+        }
+      }
+      const remaining = db.prepare(`SELECT ns.node_id, NULL AS slot_id, NULL AS slot_status, ns.evidence_text FROM node_sources ns JOIN nodes n ON n.id = ns.node_id
+        WHERE ns.source_id = ? AND n.status != 'deleted'
+        UNION ALL SELECT NULL, pss.slot_id, ps.status AS slot_status, pss.evidence_text FROM profile_slot_sources pss JOIN profile_slots ps ON ps.id = pss.slot_id
+        WHERE pss.source_id = ?`).all(sourceId, sourceId) as Array<{ node_id: string | null; slot_id: string | null; slot_status: string | null; evidence_text: string | null }>;
+      const retained = remaining.filter((row) => row.slot_status !== "deleted" ||
+        (row.slot_id !== null && profileEvidenceProvenance(db, row.slot_id, sourceId, row.evidence_text)))
+        .filter((row) => (row.node_id !== null
+        && hasAttestedNodeEvidence(db, row.node_id, sourceId, row.evidence_text))
+        || (row.slot_id !== null && profileEvidenceProvenance(db, row.slot_id, sourceId, row.evidence_text))
+        || ![...forgottenValues].some((forgotten) => row.evidence_text?.includes(forgotten)))
+        .map((row) => row.evidence_text).filter((value): value is string => Boolean(value && value !== tombstone));
       db.prepare(
         `UPDATE sources
          SET external_id = NULL, title = ?, content_excerpt = ?, metadata_json = '{}'
          WHERE id = ?`
-      ).run(tombstone, tombstone, sourceId);
+      ).run(retained.length ? "Shared evidence" : tombstone, retained.length ? retained.join("\n") : tombstone, sourceId);
     }
 
     db.prepare(

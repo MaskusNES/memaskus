@@ -22,7 +22,7 @@ export const scopeSchema = z
 
 export const sourceSchema = z
   .object({
-    kind: z.string().min(1),
+    kind: z.string().min(1).max(200),
     external_id: z.string().nullable().optional(),
     title: z.string().nullable().optional(),
     content_excerpt: z.string().nullable().optional(),
