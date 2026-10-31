@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { MemoryDb } from "../db/connection.js";
 import { explainMemory } from "../domain/explain.js";
+import { releaseFileForNode } from "../domain/files.js";
 import { createOrReuseMemory } from "../domain/remember.js";
 import {
   addMemoryFeedback,
@@ -86,7 +87,11 @@ async function sendPublicFile(
   return reply.send(content);
 }
 
-export async function registerMemoryRoutes(app: FastifyInstance, db: MemoryDb): Promise<void> {
+export async function registerMemoryRoutes(
+  app: FastifyInstance,
+  db: MemoryDb,
+  options: { filesDir?: string } = {}
+): Promise<void> {
   app.get("/v1/memories", async (request) => {
     const query = memoryQuerySchema.parse(request.query);
     const result = listMemories(db, {
@@ -144,7 +149,12 @@ export async function registerMemoryRoutes(app: FastifyInstance, db: MemoryDb): 
   app.delete("/v1/memories/:id", async (request) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const input = reasonSchema.parse(request.body ?? {});
-    return { memory: publicMemory(forgetMemory(db, params.id, input.reason)) };
+    const memory = publicMemory(forgetMemory(db, params.id, input.reason));
+    if (options.filesDir) {
+      // Physical blobs are released only when no other live descriptor shares them.
+      releaseFileForNode(db, options.filesDir, params.id);
+    }
+    return { memory };
   });
 
   app.get("/", async (_request, reply) => reply.redirect("/memory"));

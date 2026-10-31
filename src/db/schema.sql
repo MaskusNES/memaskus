@@ -181,6 +181,20 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS files (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL UNIQUE,
+  original_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  deleted_at TEXT,
+  FOREIGN KEY (node_id) REFERENCES nodes(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_files_sha256 ON files(sha256);
+
 CREATE INDEX IF NOT EXISTS idx_nodes_status_scope ON nodes(status, scope_kind, scope_project_id, scope_user_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_scope_conversation ON nodes(scope_conversation_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);

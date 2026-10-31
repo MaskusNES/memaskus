@@ -193,6 +193,7 @@ process manager, контейнером или флагом `node --env-file`.
 | `HOST` | `127.0.0.1` | Адрес HTTP-сервера. Для non-loopback обязателен API key. |
 | `PORT` | `3010` | Порт HTTP-сервера. |
 | `MEMORY_DB_PATH` | `data/memory.sqlite` | Путь к SQLite базе. |
+| `MEMORY_FILES_DIR` | `<каталог базы>/files` | Каталог файловых blob-артефактов (вне SQLite). |
 | `MEMORY_API_KEY` | не задан | Защищает `/v1/*`; передаётся как `x-memory-api-key` или Bearer token. |
 | `MEMORY_API_URL` | `http://127.0.0.1:3010` | Адрес API для CLI и MCP-процесса. |
 | `MEMORY_EMBEDDING_PROVIDER` | выключен | `openai` для семантического recall; `none` или пустое значение для local-only. |
@@ -244,7 +245,29 @@ env:
 - `memory_list_candidates`, `memory_approve_candidate`,
   `memory_reject_candidate`, `memory_merge_candidate`;
 - `memory_list_conflicts`, `memory_resolve_conflict`;
-- `memory_explain`, `memory_graph`, `memory_archive`, `memory_delete`.
+- `memory_explain`, `memory_graph`, `memory_archive`, `memory_delete`;
+- `memory_store_file`, `memory_download_file` — файловые артефакты.
+
+### Файловые артефакты
+
+`memory_store_file` читает локальный файл по `path` (содержимое не попадает в
+контекст модели), отправляет bytes по HTTP и возвращает дескриптор: активный узел
+типа `Artifact`, чей `content` содержит только краткое описание и имя файла, а в
+`metadata` — `file_id`, безопасное имя, MIME-тип, размер, SHA-256 и относительный
+`download_url`. `memory_download_file` по `file_id` записывает файл в явно
+переданный локальный `destination_path` и по умолчанию не перезаписывает
+существующий файл (есть флаг `overwrite`). Recall по описанию или имени возвращает
+дескриптор, по которому `memory_download_file` восстанавливает файл.
+
+Ограничения первой версии: максимум 10 МиБ на файл, только
+`privacy_level=normal`, попытка сохранить sensitive/secret файл отклоняется.
+Физические bytes хранятся вне SQLite в каталоге `files/` рядом с базой
+(`MEMORY_DB_PATH`, переопределяется `MEMORY_FILES_DIR`) по content-addressable
+путям от SHA-256: одинаковые bytes делят один blob, а удаление дескриптора
+убирает blob только когда на него не ссылаются другие живые дескрипторы.
+Archive файл не удаляет; `DELETE /v1/memories/:id` прекращает выдачу bytes.
+HTTP-эквиваленты: `POST /v1/files`, `GET /v1/files/:id`,
+`GET /v1/files/:id/content`.
 
 Локальная и удалённая конфигурация описаны в [mcp-setup.md](mcp-setup.md),
 а отдельный пример для Claude Code — в
@@ -365,6 +388,9 @@ Content сравнивается после JavaScript `toLowerCase()`, trim, с
 | `GET`, `POST` | `/v1/conflicts`, `/v1/conflicts/:id/resolve` | Просмотр и разрешение конфликтов. |
 | `GET`, `POST` | `/v1/profile`, `/v1/profile/slots` | Mutable profile layer. |
 | `POST` | `/v1/profile/context` | Компактный контекст для агента. |
+| `POST` | `/v1/files` | Сохранение файла (base64 JSON, до 10 МиБ) как Artifact-узла. |
+| `GET` | `/v1/files/:id` | Публичные метаданные файла. |
+| `GET` | `/v1/files/:id/content` | Скачивание исходных bytes с проверкой SHA-256. |
 
 Пример прямого HTTP-запроса:
 

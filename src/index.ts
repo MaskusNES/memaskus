@@ -6,7 +6,7 @@ import { buildServer } from "./server.js";
 const config = loadConfig();
 const db = openDatabase(config.databasePath);
 const embeddingProvider = createEmbeddingProviderFromEnv();
-const app = await buildServer(db, { embeddingProvider });
+const app = await buildServer(db, { embeddingProvider, filesDir: config.filesDir });
 
 await app.listen({ host: config.host, port: config.port });
 

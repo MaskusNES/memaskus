@@ -175,6 +175,20 @@ export function runMigrations(db: MemoryDb, schemaUrl: URL): void {
     }
     db.prepare(`INSERT OR IGNORE INTO schema_migrations (version, name, applied_at)
       VALUES (6, 'additive revision privacy with v5 rollback compatibility', ?)` ).run(nowIso());
+    db.exec(`CREATE TABLE IF NOT EXISTS files (
+      id TEXT PRIMARY KEY,
+      node_id TEXT NOT NULL UNIQUE,
+      original_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT,
+      FOREIGN KEY (node_id) REFERENCES nodes(id)
+    )`);
+    db.exec("CREATE INDEX IF NOT EXISTS idx_files_sha256 ON files(sha256)");
+    db.prepare(`INSERT OR IGNORE INTO schema_migrations (version, name, applied_at)
+      VALUES (9, 'additive server-side file artifacts with v5 rollback compatibility', ?)`).run(nowIso());
   })();
   // Repair an index that was removed or became available after the v4 migration.
   ensureNodeSearchIndex(db);

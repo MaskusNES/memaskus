@@ -120,6 +120,8 @@ Codex command syntax: [official MCP documentation](https://learn.chatgpt.com/doc
 | `memory_graph` | Return a graph snapshot. |
 | `memory_archive` | Archive while preserving audit history. |
 | `memory_delete` | Forget user-visible content and direct evidence. |
+| `memory_store_file` | Upload a local file as an `Artifact` memory node (bytes go over HTTP, never through the model context; max 10 MiB, `privacy_level=normal` only). |
+| `memory_download_file` | Restore a stored file by `file_id` to an explicit local `destination_path` (no overwrite unless `overwrite=true`; returns metadata without base64). |
 
 ## Recommended agent workflow
 

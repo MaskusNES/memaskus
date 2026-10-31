@@ -1,10 +1,12 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { ZodError } from "zod";
+import { resolveFilesDir } from "./config.js";
 import type { MemoryDb } from "./db/connection.js";
 import type { EmbeddingProvider } from "./domain/embeddings.js";
 import { NotFoundError, ValidationError } from "./shared/errors.js";
 import { registerCandidateRoutes } from "./routes/candidates.js";
+import { registerFileRoutes } from "./routes/files.js";
 import { registerGraphRoutes } from "./routes/graph.js";
 import { registerExplorerRoutes } from "./routes/explorer.js";
 import { registerIngestRoutes } from "./routes/ingest.js";
@@ -44,11 +46,13 @@ function requestApiKey(headers: Record<string, string | string[] | undefined>): 
 
 export type ServerOptions = {
   embeddingProvider?: EmbeddingProvider;
+  filesDir?: string;
 };
 
 export async function buildServer(db: MemoryDb, options: ServerOptions = {}) {
   const app = Fastify({ logger: true });
   const apiKey = process.env.MEMORY_API_KEY;
+  const filesDir = options.filesDir ?? resolveFilesDir(db.name);
 
   await app.register(cors, {
     origin: (origin, callback) => {
@@ -123,7 +127,8 @@ export async function buildServer(db: MemoryDb, options: ServerOptions = {}) {
     }
   });
 
-  await registerMemoryRoutes(app, db);
+  await registerMemoryRoutes(app, db, { filesDir });
+  await registerFileRoutes(app, db, filesDir);
   await registerProfileRoutes(app, db);
   await registerRecallRoutes(app, db, options.embeddingProvider);
   await registerLinkRoutes(app, db);

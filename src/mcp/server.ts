@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -599,6 +600,89 @@ export function createMemoryMcpServer(client: MemoryHttpClient): McpServer {
       }
     },
     async (input) => jsonToolResult(await client.request(`/v1/memories/${encodeURIComponent(input.id)}/explain`))
+  );
+
+  server.registerTool(
+    "memory_store_file",
+    {
+      title: "Store File Artifact",
+      description:
+        "Save a local file to the memory server as an Artifact node. The file content is read from the local path and sent as bytes over HTTP — it never enters the model context. Requires a short human-readable description. File nodes only support privacy_level=normal. Maximum decoded size is 10 MiB.",
+      inputSchema: {
+        path: z.string().min(1).describe("Absolute or relative local path of the file to upload"),
+        description: z.string().min(1).describe("Short human-readable description of the file"),
+        scope: scopeInputSchema.optional(),
+        confidence: z.number().min(0).max(1).optional(),
+        metadata: z.record(z.unknown()).optional()
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async (input) => {
+      const bytes = await fs.readFile(input.path);
+      const result = await client.request("/v1/files", {
+        method: "POST",
+        body: JSON.stringify({
+          content_base64: Buffer.from(bytes).toString("base64"),
+          filename: path.basename(input.path),
+          description: input.description,
+          scope: normalizeScope(input.scope),
+          confidence: input.confidence,
+          metadata: input.metadata
+        })
+      });
+      return jsonToolResult(result);
+    }
+  );
+
+  server.registerTool(
+    "memory_download_file",
+    {
+      title: "Download File Artifact",
+      description:
+        "Download a previously stored file artifact by file_id and write it to an explicit local destination_path. Existing files are not overwritten unless overwrite=true. Returns file metadata only — file bytes never enter the model context.",
+      inputSchema: {
+        file_id: z.string().min(1),
+        destination_path: z.string().min(1),
+        overwrite: z.boolean().optional()
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async (input) => {
+      const metadata = (await client.request(`/v1/files/${encodeURIComponent(input.file_id)}`)) as {
+        file: { id: string; original_name: string; mime_type: string; size: number; sha256: string };
+      };
+      if (!input.overwrite) {
+        try {
+          await fs.access(input.destination_path);
+          throw new Error(`Destination file already exists: ${input.destination_path}`);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw error;
+          }
+        }
+      }
+      const response = await client.requestRaw(`/v1/files/${encodeURIComponent(input.file_id)}/content`);
+      if (!response.ok) {
+        throw new Error(`Memory API download failed (HTTP ${response.status}): ${await response.text()}`);
+      }
+      const bytes = Buffer.from(await response.buffer());
+      await fs.writeFile(input.destination_path, bytes);
+      return jsonToolResult({
+        file: metadata.file,
+        destination_path: input.destination_path,
+        written_bytes: bytes.length
+      });
+    }
   );
 
   server.registerTool(

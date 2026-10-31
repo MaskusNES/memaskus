@@ -2,7 +2,7 @@ import type { MemoryDb } from "../db/connection.js";
 import type { EmbeddingProvider } from "./embeddings.js";
 import { knowledgeScope } from "./links.js";
 import { mapEdge, mapNode } from "./mappers.js";
-import { redactedContent, redactSourcesForMemory } from "./privacy.js";
+import { redactedContent, redactSourcesForMemory, sanitizeMetadata } from "./privacy.js";
 import { memoryVisibilitySqlParts, scopeVisibleFrom } from "./scope.js";
 import { indexedNodeSearch, tokenOverlap } from "./search.js";
 import { semanticNodeSearch } from "./semantic-search.js";
@@ -28,6 +28,7 @@ export type RecallResult = {
   type: string;
   content: string;
   confidence: number;
+  metadata: Record<string, unknown>;
   score: number;
   retrieval: {
     strategy: "semantic_fts5_graph" | "semantic_token_graph" | "fts5_graph" | "token_graph";
@@ -307,6 +308,7 @@ export async function recall(
         type: memory.type,
         content: redactedContent(memory),
         confidence: memory.confidence,
+        metadata: memory.privacy_level === "normal" ? sanitizeMetadata(memory.metadata) : {},
         score: Number(score.toFixed(4)),
         retrieval: {
           strategy,
