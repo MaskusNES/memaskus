@@ -43,21 +43,14 @@ function hasOtherSourceOwners(db: MemoryDb, nodeId: string, sourceId: string): b
     .get(sourceId, nodeId, sourceId, sourceId));
 }
 
-// Evidence is a quote, not necessarily a substring of the normalized assertion.
-// Reject legacy mixed excerpts using the other owners' values and evidence,
-// rather than requiring a literal match with the assertion.
+// Legacy node_sources links do not attest that a quote belongs exclusively to
+// this node. A shared excerpt may paraphrase other owners, so comparing their
+// literal content cannot establish isolation. Project the allowed assertion
+// whenever ownership is ambiguous; keep quotes for sources with a single owner.
 export function sourceEvidenceForNode(db: MemoryDb, nodeId: string, sourceId: string, evidence: string | null): string | null {
-  if (!evidence || !hasOtherSourceOwners(db, nodeId, sourceId)) return evidence;
+  if (!hasOtherSourceOwners(db, nodeId, sourceId)) return evidence;
   const node = db.prepare("SELECT content FROM nodes WHERE id = ?").get(nodeId) as { content: string };
-  const foreignValues = db.prepare(`SELECT n.content, ns.evidence_text FROM node_sources ns
-    JOIN nodes n ON n.id = ns.node_id WHERE ns.source_id = ? AND ns.node_id != ?
-    UNION ALL SELECT content, NULL FROM candidates WHERE source_id = ?
-    UNION ALL SELECT ps.content, pss.evidence_text FROM profile_slot_sources pss
-    JOIN profile_slots ps ON ps.id = pss.slot_id WHERE pss.source_id = ?`)
-    .all(sourceId, nodeId, sourceId, sourceId) as Array<{ content: string; evidence_text: string | null }>;
-  const contaminated = foreignValues.some((owner) => [owner.content, owner.evidence_text].some((value) =>
-    value && evidence.includes(value) && !node.content.includes(value)));
-  return contaminated ? node.content : redactSecrets(evidence);
+  return redactSecrets(node.content);
 }
 
 export function listSourcesForNode(db: MemoryDb, nodeId: string): Source[] {

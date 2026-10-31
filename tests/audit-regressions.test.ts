@@ -81,7 +81,7 @@ describe("technical audit regressions", () => {
     }
   });
 
-  it.each(["legacy", "manual"])("isolates a %s source shared only with a protected foreign profile slot", async (kind) => {
+  it.each(["legacy", "manual"])("conservatively projects a %s source shared only with a protected foreign profile slot", async (kind) => {
     const quote = "For new projects choose TypeScript";
     const hidden = "PROFILE_PRIVATE_FRAGMENT";
     const source = createSource(db, { kind, title: hidden, external_id: hidden,
@@ -94,7 +94,7 @@ describe("technical audit regressions", () => {
     for (const result of [await send("GET", `/v1/memories/${visible.id}/explain`),
       await send("POST", "/v1/recall", { query: "TypeScript", scope: { kind: "global" }, include_sources: true }),
       await send("GET", "/v1/explorer?q=TypeScript")]) {
-      expect(JSON.stringify(result)).toContain(quote);
+      expect(JSON.stringify(result)).toContain(visible.content);
       expect(JSON.stringify(result)).not.toContain(hidden);
     }
     // Legacy links may also contain the full mixed excerpt rather than a quote.
@@ -102,6 +102,35 @@ describe("technical audit regressions", () => {
     const mixed = await send("GET", `/v1/memories/${visible.id}/explain`);
     expect(mixed.evidence[0].evidence_text).toBe(visible.content);
     expect(JSON.stringify(mixed)).not.toContain(hidden);
+  });
+
+  it.each([null, "A separate normalized evidence summary"])("isolates paraphrased shared evidence with foreign evidence=%s", async (foreignEvidence) => {
+    const localQuote = "Deploy the unreleased orchard service on the private cedar host";
+    const protectedQuote = "My health appointment is scheduled for next Thursday";
+    const visible = memory("PUBLIC_PARAPHRASE_EVIDENCE", { scope: { kind: "global" } });
+    const local = memory("The orchard project uses cedar infrastructure", {
+      scope: { kind: "project", project_id: "project:foreign" }
+    });
+    const protectedNode = memory("The user has a medical visit next week", {
+      scope: { kind: "global" }, privacy_level: "sensitive"
+    });
+    const mixed = `${visible.content}; ${localQuote}; ${protectedQuote}`;
+    const source = createSource(db, { kind: "legacy", content_excerpt: mixed });
+    for (const node of [visible, local, protectedNode]) {
+      db.prepare("INSERT INTO node_sources VALUES (?, ?, ?, ?)")
+        .run(node.id, source.id, node.id === visible.id ? mixed : foreignEvidence, node.created_at);
+    }
+    for (const result of [await send("GET", `/v1/memories/${visible.id}/explain`),
+      await send("POST", "/v1/recall", { query: visible.content, scope: { kind: "global" }, include_sources: true }),
+      await send("GET", `/v1/explorer?q=${visible.content}`)]) {
+      const serialized = JSON.stringify(result);
+      expect(serialized).toContain(visible.content);
+      expect(serialized).not.toContain(localQuote);
+      expect(serialized).not.toContain(protectedQuote);
+    }
+    const explanation = await send("GET", `/v1/memories/${visible.id}/explain`);
+    expect(explanation.evidence[0].evidence_text).toBe(visible.content);
+    expect(explanation.sources[0].content_excerpt).toBe(visible.content);
   });
 
   it("retains a conversation quote that differs from the normalized memory assertion", async () => {
@@ -132,6 +161,34 @@ describe("technical audit regressions", () => {
     expect(details.revisions).toEqual(expect.arrayContaining([expect.objectContaining({
       previous_content: m2.content, next_content: "Independent replacement edited", memory_id: m2.id
     })]));
+  });
+
+  it("forgetting a rejected projection author preserves the replacement owner's history and evidence", async () => {
+    const metadata = { profile_sub_topic: "rejected-owner" };
+    const m1 = memory("FORMER_REJECTED_VALUE", { type: "Preference", confidence: 0.6, metadata,
+      source: { kind: "manual", content_excerpt: "FORMER_REJECTED_VALUE" } });
+    const slot = applyMemoryToProfile(db, m1)!;
+    const m2 = memory("Independent replacement value", { type: "Preference", confidence: 0.95, metadata,
+      source: { kind: "manual", content_excerpt: "Independent replacement evidence" } });
+    applyMemoryToProfile(db, m2);
+    applyMemoryToProfile(db, m1);
+    expect(getProfileSlot(db, slot.id)).toMatchObject({ content: m2.content, metadata: { source_memory_id: m2.id } });
+    const latest = db.prepare("SELECT memory_id, previous_content, next_content FROM profile_slot_revisions WHERE slot_id = ? ORDER BY rowid DESC LIMIT 1").get(slot.id);
+    expect(latest).toEqual({ memory_id: m2.id, previous_content: m2.content, next_content: m2.content });
+    const replacementSource = listSourcesForNode(db, m2.id)[0];
+    await send("DELETE", `/v1/memories/${m1.id}`);
+    const details = await send("GET", `/v1/profile/slots/${slot.id}`);
+    expect(getProfileSlot(db, slot.id)).toMatchObject({ status: "active", content: m2.content, metadata: { source_memory_id: m2.id } });
+    expect(details.revisions).toEqual(expect.arrayContaining([expect.objectContaining({
+      memory_id: m2.id, previous_content: m2.content, next_content: m2.content
+    })]));
+    expect(JSON.stringify(details)).not.toContain(m1.content);
+    expect(db.prepare("SELECT evidence_text FROM profile_slot_sources WHERE slot_id = ? AND source_id = ?").get(slot.id, replacementSource.id))
+      .toEqual({ evidence_text: m2.content });
+    const explanation = await send("GET", `/v1/memories/${m2.id}/explain`);
+    expect(explanation.evidence[0].evidence_text).toBe(m2.content);
+    expect(db.prepare("SELECT evidence_text FROM node_sources WHERE node_id = ? AND source_id = ?").get(m2.id, replacementSource.id))
+      .toEqual({ evidence_text: "Independent replacement evidence" });
   });
 
   it.each(["secret", "sensitive"] as const)("keeps %s historical memory and slot values private after downgrade", async (privacy_level) => {

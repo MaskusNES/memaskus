@@ -406,7 +406,10 @@ export function upsertProfileSlot(db: MemoryDb, input: UpsertProfileSlotInput): 
       source_id: input.source_id,
       evidence_text: input.evidence_text,
       candidate_id: input.candidate_id,
-      memory_id: input.memory_id,
+      // memory_id attributes the revision value, while source_id/candidate_id
+      // identify the incoming evidence. Rejected evidence cannot take ownership
+      // of the retained value (or make forgetting its author erase that value).
+      memory_id: acceptsReplacement ? input.memory_id : undefined,
       reason: input.reason ?? "profile slot updated from new evidence"
     });
   });
